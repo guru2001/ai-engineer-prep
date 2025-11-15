@@ -1,0 +1,11 @@
+pipecat-ai
+python-dotenv
+openai
+deepgram-sdk
+cartesia
+aiohttp
+requests
+wikipedia
+sounddevice
+numpy
+
