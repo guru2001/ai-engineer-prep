@@ -1,263 +1,182 @@
 """
 Simple Wikipedia Voice Bot
-Ask questions and get Wikipedia answers via voice - no rooms needed!
+Mic -> STT -> Wikipedia -> TTS -> Speaker
 """
 
-import os
 import asyncio
-import base64
-import json
+import os
 import wikipedia
-import requests
 from dotenv import load_dotenv
-from deepgram import DeepgramClient, PrerecordedOptions, FileSource
-import sounddevice as sd
-import numpy as np
-import wave
-import tempfile
 
-# Load environment variables
+from pipecat.pipeline.pipeline import Pipeline
+from pipecat.pipeline.task import PipelineTask, PipelineParams, PipelineTaskParams
+from pipecat.processors.frame_processor import FrameProcessor
+from pipecat.frames.frames import StartFrame, TextFrame
+from pipecat.services.openai.stt import OpenAISTTService
+from pipecat.services.openai.tts import OpenAITTSService
+from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport, TransportParams
+from pipecat.audio.vad.silero import SileroVADAnalyzer
+from pipecat.runner.types import RunnerArguments
+
 load_dotenv()
 
-# Initialize services
-deepgram_api_key = os.getenv("DEEPGRAM_API_KEY")
-cartesia_api_key = os.getenv("CARTESIA_API_KEY")
 
-if not deepgram_api_key or not cartesia_api_key:
-    print("Error: Please set DEEPGRAM_API_KEY and CARTESIA_API_KEY in your .env file")
-    exit(1)
+# ----------------- WIKIPEDIA HELPERS ----------------- #
 
-deepgram = DeepgramClient(deepgram_api_key)
-CARTESIA_API_KEY = cartesia_api_key
+def extract_topic(question: str) -> str:
+    q = question.lower().strip()
 
-def record_audio(duration=5, sample_rate=16000):
-    """Record audio from microphone"""
-    print(f"\n🎤 Listening for {duration} seconds... Speak now!")
-    audio_data = sd.rec(int(duration * sample_rate), samplerate=sample_rate, channels=1, dtype='float32')
-    sd.wait()  # Wait until recording is finished
-    return audio_data, sample_rate
-
-def save_audio_to_file(audio_data, sample_rate):
-    """Save audio data to temporary WAV file"""
-    with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as tmp_file:
-        filename = tmp_file.name
-        with wave.open(filename, 'wb') as wav_file:
-            wav_file.setnchannels(1)
-            wav_file.setsampwidth(2)
-            wav_file.setframerate(sample_rate)
-            # Convert float32 to int16
-            audio_int16 = (audio_data * 32767).astype(np.int16)
-            wav_file.writeframes(audio_int16.tobytes())
-        return filename
-
-def speech_to_text(audio_file):
-    """Convert speech to text using Deepgram"""
-    try:
-        with open(audio_file, "rb") as file:
-            buffer_data = file.read()
-        
-        payload: FileSource = {
-            "buffer": buffer_data,
-        }
-        
-        options = PrerecordedOptions(
-            model="nova-2",
-            smart_format=True,
-        )
-        
-        response = deepgram.listen.rest.v("1").transcribe_file(payload, options)
-        transcript = response.results.channels[0].alternatives[0].transcript
-        return transcript.strip()
-    except Exception as e:
-        print(f"Error in speech-to-text: {e}")
-        return None
-
-def extract_topic(question):
-    """Extract the main topic from a question"""
-    # Remove common question words and phrases
-    question_lower = question.lower().strip()
-    
-    # Remove question starters
-    question_starters = [
+    starters = [
         "tell me about", "what is", "who is", "what are", "who are",
-        "explain", "describe", "hey", "hi", "hello", "can you tell me",
-        "i want to know about", "tell me", "what do you know about"
+        "explain", "describe", "can you tell me",
+        "i want to know about", "tell me", "what do you know about",
+        "hey", "hi", "hello"
     ]
-    
-    for starter in question_starters:
-        if question_lower.startswith(starter):
-            question_lower = question_lower[len(starter):].strip()
-            # Remove trailing punctuation
-            question_lower = question_lower.rstrip(".,!?")
-            break
-    
-    # If the question is just "about X", extract X
-    if question_lower.startswith("about "):
-        question_lower = question_lower[6:].strip()
-    
-    # Take the first meaningful phrase (before any punctuation or "and", "or", etc.)
-    topic = question_lower.split(",")[0].split(" and ")[0].split(" or ")[0].split("?")[0].strip()
-    
-    # Capitalize first letter of each word for better Wikipedia search
-    topic = topic.title()
-    
-    return topic if topic else question.strip()
 
-def search_wikipedia(query):
-    """Search Wikipedia and get summary"""
+    for s in starters:
+        if q.startswith(s):
+            q = q[len(s):].strip()
+            break
+
+    if q.startswith("about "):
+        q = q[6:].strip()
+
+    topic = (
+        q.split(",")[0]
+        .split(" and ")[0]
+        .split(" or ")[0]
+        .split("?")[0]
+        .strip()
+    )
+
+    return topic.title() if topic else question.strip()
+
+
+def search_wikipedia(query: str) -> str:
     try:
-        # Extract the main topic from the question
         topic = extract_topic(query)
-        print(f"🔎 Searching for: {topic}")
-        
-        # Search for the page
-        search_results = wikipedia.search(topic, results=1)
-        if not search_results:
-            return f"Sorry, I couldn't find information about '{topic}' on Wikipedia."
-        
-        # Get the page
-        page = wikipedia.page(search_results[0])
-        summary = page.summary[:500]  # Limit to 500 characters for voice response
-        return f"According to Wikipedia: {summary}"
+        print(f"🔎 Searching Wikipedia for: {topic}")
+
+        results = wikipedia.search(topic, results=1)
+
+        if not results:
+            return f"Sorry, I couldn't find anything about {topic}."
+
+        page = wikipedia.page(results[0])
+        return f"According to Wikipedia: {page.summary[:500]}"
+
     except wikipedia.exceptions.DisambiguationError as e:
-        # If there's a disambiguation, use the first option
-        try:
-            page = wikipedia.page(e.options[0])
-            summary = page.summary[:500]
-            return f"According to Wikipedia: {summary}"
-        except:
-            return f"Multiple results found for '{topic}'. Could you be more specific?"
-    except wikipedia.exceptions.PageError:
-        return f"Sorry, I couldn't find a Wikipedia page for '{topic}'."
-    except Exception as e:
-        return f"Error searching Wikipedia: {str(e)}"
+        page = wikipedia.page(e.options[0])
+        return f"According to Wikipedia: {page.summary[:500]}"
 
-def text_to_speech(text):
-    """Convert text to speech using Cartesia SSE API"""
-    try:
-        print(f"🔊 Speaking: {text[:100]}...")
-        
-        # Use Cartesia SSE API endpoint
-        url = "https://api.cartesia.ai/tts/sse"
-        headers = {
-            "Cartesia-Version": "2025-04-16",
-            "X-API-Key": CARTESIA_API_KEY,
-            "Content-Type": "application/json"
-        }
-        data = {
-            "model_id": "sonic-english",
-            "transcript": text,
-            "voice": {
-                "mode": "id",
-                "id": "79a125e8-cd45-4c13-8a67-188112f4dd22"
-            },
-            "language": "en",
-            "output_format": {
-                "container": "raw",
-                "encoding": "pcm_s16le",
-                "sample_rate": 16000
-            }
-        }
-        
-        response = requests.post(url, headers=headers, json=data, stream=True)
-        response.raise_for_status()
-        
-        # Collect audio chunks from SSE stream
-        # Cartesia sends JSON objects with type="chunk" and data field containing base64 audio
-        audio_chunks = []
-        for line in response.iter_lines():
-            if line:
-                line_str = line.decode('utf-8')
-                if line_str.startswith('data: '):
-                    # Extract data after 'data: ' prefix
-                    data_str = line_str[6:].strip()
-                    if data_str and data_str != '[DONE]':
-                        try:
-                            # Parse as JSON (Cartesia SSE format)
-                            json_data = json.loads(data_str)
-                            
-                            # Check if it's a chunk with audio data
-                            if isinstance(json_data, dict) and json_data.get('type') == 'chunk':
-                                if 'data' in json_data and isinstance(json_data['data'], str):
-                                    # Decode base64 audio data
-                                    audio_chunk = base64.b64decode(json_data['data'])
-                                    audio_chunks.append(audio_chunk)
-                        except (json.JSONDecodeError, KeyError, ValueError) as e:
-                            # Skip non-audio chunks or invalid data
-                            pass
-        
-        # Combine all audio chunks
-        if audio_chunks:
-            audio_bytes = b''.join(audio_chunks)
-            
-            # Ensure buffer size is a multiple of 2 (int16 = 2 bytes)
-            if len(audio_bytes) % 2 != 0:
-                audio_bytes = audio_bytes[:-1]  # Remove last byte if odd
-            
-            if len(audio_bytes) > 0:
-                # Convert response to numpy array and play
-                # Note: pcm_s16le is little-endian signed 16-bit PCM
-                audio_data = np.frombuffer(audio_bytes, dtype=np.int16)
-                # Convert to float32 and normalize to [-1, 1]
-                audio_data = audio_data.astype(np.float32) / 32768.0
-                
-                sd.play(audio_data, samplerate=16000)
-                sd.wait()  # Wait until playback is finished
-            else:
-                print("No valid audio data received from Cartesia")
-        else:
-            print("No audio data received from Cartesia")
     except Exception as e:
-        print(f"Error in text-to-speech: {e}")
-        import traceback
-        traceback.print_exc()
+        return f"Error: {str(e)}"
 
-async def main():
-    print("\n" + "="*60)
-    print("📚 Wikipedia Voice Bot")
-    print("="*60)
-    print("Ask me anything and I'll search Wikipedia for you!")
-    print("Press Ctrl+C to exit")
-    print("="*60 + "\n")
-    
-    while True:
-        try:
-            # Record audio
-            audio_data, sample_rate = record_audio(duration=5)
+
+# ----------------- CUSTOM PROCESSOR ----------------- #
+
+class WikipediaProcessor(FrameProcessor):
+    async def process_frame(self, frame, direction):
+        # Always call parent first to handle initialization
+        await super().process_frame(frame, direction)
+
+        # Only process TextFrame (user questions)
+        if isinstance(frame, TextFrame):
+            question = frame.text.strip()
             
-            # Save to temporary file
-            audio_file = save_audio_to_file(audio_data, sample_rate)
-            
-            # Convert speech to text
-            print("🔄 Processing your question...")
-            question = speech_to_text(audio_file)
-            
-            # Clean up temp file
-            os.unlink(audio_file)
-            
+            # Skip empty text
             if not question:
-                print("❌ Could not understand your question. Please try again.")
-                continue
+                await self.push_frame(frame, direction)
+                return
             
-            print(f"❓ Your question: {question}")
-            
-            # Search Wikipedia
-            print("🔍 Searching Wikipedia...")
+            print(f"\n❓ User asked: {question}")
+
             answer = search_wikipedia(question)
-            print(f"📖 Answer: {answer}\n")
-            
-            # Convert answer to speech
-            text_to_speech(answer)
-            
-            print("\n" + "-"*60 + "\n")
-            
-        except KeyboardInterrupt:
-            print("\n\n👋 Goodbye!")
-            break
-        except Exception as e:
-            print(f"❌ Error: {e}")
-            continue
+            print(f"📘 Answer: {answer}\n")
+
+            # Push the answer as a new TextFrame
+            await self.push_frame(TextFrame(answer), direction)
+            return
+
+        # Forward all other frames (StartFrame, AudioFrame, etc.)
+        await self.push_frame(frame, direction)
+
+
+# ----------------- BOT SETUP ----------------- #
+
+async def run_bot(transport: SmallWebRTCTransport):
+    """Set up and run the Wikipedia bot pipeline."""
+    
+    print("🔧 Setting up pipeline...")
+    
+    # STT
+    stt = OpenAISTTService(
+        model="gpt-4o-transcribe",
+        api_key=os.getenv("OPENAI_API_KEY")
+    )
+    print("✅ STT service initialized")
+
+    # TTS
+    tts = OpenAITTSService(
+        voice="alloy",
+        api_key=os.getenv("OPENAI_API_KEY")
+    )
+    print("✅ TTS service initialized")
+
+    wiki = WikipediaProcessor()
+    print("✅ Wikipedia processor initialized")
+
+    # Pipeline
+    pipeline = Pipeline([
+        transport.input(),   # microphone
+        stt,                 # speech → text
+        wiki,                # wikipedia query
+        tts,                 # text → speech
+        transport.output()   # speaker
+    ])
+    print("✅ Pipeline created")
+
+    # Create pipeline task with parameters
+    pipeline_params = PipelineParams(
+        audio_in_sample_rate=16000,
+        audio_out_sample_rate=16000,
+    )
+    
+    task = PipelineTask(pipeline, params=pipeline_params)
+    print("✅ Pipeline task created")
+    
+    # Queue the StartFrame to initialize the pipeline
+    await task.queue_frames([StartFrame()])
+    print("✅ StartFrame queued")
+    
+    print("🎤 Bot is ready! Speak your question...")
+    
+    # Create task params with the running event loop
+    task_params = PipelineTaskParams(loop=asyncio.get_running_loop())
+    
+    # Run the pipeline task
+    await task.run(task_params)
+
+
+# ----------------- RUNNER ENTRY POINT ----------------- #
+
+async def bot(runner_args: RunnerArguments):
+    """Main bot entry point called by the development runner."""
+    
+    # Create your transport based on the runner arguments
+    transport = SmallWebRTCTransport(
+        params=TransportParams(
+            audio_in_enabled=True,
+            audio_out_enabled=True,
+            vad_analyzer=SileroVADAnalyzer(),
+        ),
+        webrtc_connection=runner_args.webrtc_connection,
+    )
+
+    # Run your bot logic
+    await run_bot(transport)
+
 
 if __name__ == "__main__":
-    asyncio.run(main())
-
+    from pipecat.runner.run import main
+    main()
