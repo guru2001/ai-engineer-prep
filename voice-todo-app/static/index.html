@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voice Todo App</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+            color: #333;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            opacity: 0.9;
+            font-size: 1.1em;
+        }
+
+        .content {
+            padding: 30px;
+        }
+
+        .voice-controls {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 30px;
+            align-items: center;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        .voice-button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            border-radius: 50px;
+            font-size: 1.1em;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-weight: 600;
+        }
+
+        .voice-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
+        }
+
+        .voice-button:active {
+            transform: translateY(0);
+        }
+
+        .voice-button.recording {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+        }
+
+        .status {
+            text-align: center;
+            padding: 15px;
+            margin-bottom: 20px;
+            border-radius: 10px;
+            font-weight: 500;
+            min-height: 50px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .status.listening {
+            background: #fff3cd;
+            color: #856404;
+        }
+
+        .status.processing {
+            background: #d1ecf1;
+            color: #0c5460;
+        }
+
+        .status.success {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        .tasks-container {
+            margin-top: 30px;
+        }
+
+        .tasks-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .tasks-header h2 {
+            color: #333;
+        }
+
+        .task-list {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        .task-item {
+            background: #f8f9fa;
+            border-left: 4px solid #667eea;
+            padding: 20px;
+            border-radius: 10px;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .task-item:hover {
+            transform: translateX(5px);
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+        }
+
+        .task-title {
+            font-size: 1.2em;
+            font-weight: 600;
+            margin-bottom: 10px;
+            color: #333;
+        }
+
+        .task-meta {
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+            font-size: 0.9em;
+            color: #666;
+        }
+
+        .task-meta span {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .priority {
+            padding: 4px 10px;
+            border-radius: 15px;
+            font-size: 0.85em;
+            font-weight: 600;
+        }
+
+        .priority.high {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        .priority.medium {
+            background: #fff3cd;
+            color: #856404;
+        }
+
+        .priority.low {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #999;
+        }
+
+        .empty-state svg {
+            width: 100px;
+            height: 100px;
+            margin-bottom: 20px;
+            opacity: 0.5;
+        }
+
+        .mic-icon {
+            width: 20px;
+            height: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎤 Voice Todo App</h1>
+            <p>Speak your commands to manage your tasks</p>
+        </div>
+        <div class="content">
+            <div class="voice-controls">
+                <button id="voiceButton" class="voice-button">
+                    <svg class="mic-icon" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
+                        <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
+                    </svg>
+                    Start Speaking
+                </button>
+            </div>
+            <div id="status" class="status"></div>
+            <div class="tasks-container">
+                <div class="tasks-header">
+                    <h2>Your Tasks</h2>
+                </div>
+                <div id="taskList" class="task-list">
+                    <div class="empty-state">
+                        <p>No tasks yet. Try saying: "Create a task to buy groceries"</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const voiceButton = document.getElementById('voiceButton');
+        const statusDiv = document.getElementById('status');
+        const taskList = document.getElementById('taskList');
+
+        let recognition = null;
+        let isListening = false;
+
+        // Check for browser support
+        if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
+            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            recognition = new SpeechRecognition();
+            recognition.continuous = false;
+            recognition.interimResults = false;
+            recognition.lang = 'en-US';
+
+            recognition.onstart = () => {
+                isListening = true;
+                voiceButton.classList.add('recording');
+                voiceButton.innerHTML = `
+                    <svg class="mic-icon" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
+                        <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
+                    </svg>
+                    Listening...
+                `;
+                updateStatus('Listening...', 'listening');
+            };
+
+            recognition.onresult = async (event) => {
+                const command = event.results[0][0].transcript;
+                updateStatus(`Processing: "${command}"`, 'processing');
+                await processCommand(command);
+            };
+
+            recognition.onerror = (event) => {
+                console.error('Speech recognition error:', event.error);
+                updateStatus(`Error: ${event.error}`, 'error');
+                resetButton();
+            };
+
+            recognition.onend = () => {
+                resetButton();
+            };
+
+            voiceButton.addEventListener('click', () => {
+                if (!isListening) {
+                    recognition.start();
+                } else {
+                    recognition.stop();
+                }
+            });
+        } else {
+            voiceButton.disabled = true;
+            updateStatus('Speech recognition not supported in this browser', 'error');
+        }
+
+        function resetButton() {
+            isListening = false;
+            voiceButton.classList.remove('recording');
+            voiceButton.innerHTML = `
+                <svg class="mic-icon" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
+                    <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
+                </svg>
+                Start Speaking
+            `;
+        }
+
+        function updateStatus(message, type = '') {
+            statusDiv.textContent = message;
+            statusDiv.className = `status ${type}`;
+        }
+
+        async function processCommand(command) {
+            try {
+                const response = await fetch('/api/voice-command', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ command }),
+                });
+
+                const data = await response.json();
+                updateStatus(data.message, 'success');
+                
+                // Speak the response
+                speak(data.message);
+                
+                // Update task list
+                renderTasks(data.tasks);
+            } catch (error) {
+                console.error('Error processing command:', error);
+                updateStatus(`Error: ${error.message}`, 'error');
+            }
+        }
+
+        function speak(text) {
+            if ('speechSynthesis' in window) {
+                const utterance = new SpeechSynthesisUtterance(text);
+                utterance.rate = 1.0;
+                utterance.pitch = 1.0;
+                speechSynthesis.speak(utterance);
+            }
+        }
+
+        function renderTasks(tasks) {
+            if (!tasks || tasks.length === 0) {
+                taskList.innerHTML = `
+                    <div class="empty-state">
+                        <p>No tasks yet. Try saying: "Create a task to buy groceries"</p>
+                    </div>
+                `;
+                return;
+            }
+
+            taskList.innerHTML = tasks.map(task => {
+                const scheduled = task.scheduled_time 
+                    ? new Date(task.scheduled_time).toLocaleString()
+                    : 'Not scheduled';
+                const priorityClass = task.priority || 'medium';
+                
+                return `
+                    <div class="task-item">
+                        <div class="task-title">${escapeHtml(task.title)}</div>
+                        <div class="task-meta">
+                            ${task.category ? `<span>📁 ${escapeHtml(task.category)}</span>` : ''}
+                            <span class="priority ${priorityClass}">${priorityClass.toUpperCase()}</span>
+                            <span>📅 ${scheduled}</span>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Load tasks on page load
+        async function loadTasks() {
+            try {
+                const response = await fetch('/api/tasks');
+                const data = await response.json();
+                renderTasks(data.tasks);
+            } catch (error) {
+                console.error('Error loading tasks:', error);
+            }
+        }
+
+        loadTasks();
+    </script>
+</body>
+</html>
+

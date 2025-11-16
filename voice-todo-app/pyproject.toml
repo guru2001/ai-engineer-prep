@@ -1,0 +1,15 @@
+[project]
+name = "voice-todo-app"
+version = "0.1.0"
+description = "Voice-first to-do list web app with LangChain agent"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+    "langchain>=0.1.0",
+    "langchain-openai>=0.0.2",
+    "langchain-community>=0.0.10",
+    "pydantic>=2.5.0",
+    "python-dateutil>=2.8.2",
+]
