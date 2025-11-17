@@ -19,34 +19,62 @@ class Database:
         # Initialize OpenAI client for embeddings
         self.openai_client = OpenAI(api_key=openai_api_key or os.getenv("OPENAI_API_KEY"))
         self.embedding_model = "text-embedding-3-small"
-        
-        # Track next ID (ChromaDB doesn't auto-increment)
-        self._init_id_counter()
 
-    def _init_id_counter(self):
-        """Initialize the ID counter based on existing tasks"""
+    def _get_chromadb_id(self, task_id: int, session_id: Optional[str] = None) -> str:
+        """Generate a unique ChromaDB ID from task_id and session_id
+        
+        Args:
+            task_id: Session-specific task ID
+            session_id: Session ID (uses "default" if None)
+            
+        Returns:
+            Composite ChromaDB ID: "{session_id}_{task_id}"
+        """
+        effective_session_id = session_id or "default"
+        return f"{effective_session_id}_{task_id}"
+    
+    def _get_next_id(self, session_id: Optional[str] = None) -> int:
+        """Get the next available task ID for a session
+        
+        Args:
+            session_id: Session ID to get next ID for. If None, uses "default" for backward compatibility.
+            
+        Returns:
+            Next available task ID for the session (starts at 1 per session)
+        """
+        # Use "default" for backward compatibility if no session_id provided
+        effective_session_id = session_id or "default"
+        
         try:
-            all_results = self.collection.get()
-            if all_results["ids"]:
-                # Find the maximum ID (handle both string and int IDs)
-                max_id = 0
-                for id_str in all_results["ids"]:
+            # Get all tasks for this session to find the max ID
+            where_clause = {"session_id": effective_session_id}
+            results = self.collection.get(where=where_clause)
+            
+            max_id = 0
+            if results["ids"]:
+                for chromadb_id in results["ids"]:
+                    # Handle both old format (just number) and new format (session_id_taskid)
                     try:
-                        id_int = int(id_str)
+                        if "_" in chromadb_id:
+                            # New format: extract task_id from "session_id_taskid"
+                            parts = chromadb_id.split("_", 1)
+                            if len(parts) == 2:
+                                id_int = int(parts[1])
+                            else:
+                                continue
+                        else:
+                            # Old format: just a number (backward compatibility)
+                            id_int = int(chromadb_id)
                         max_id = max(max_id, id_int)
                     except (ValueError, TypeError):
                         continue
-                self._next_id = max_id + 1 if max_id > 0 else 1
-            else:
-                self._next_id = 1
-        except Exception:
-            self._next_id = 1
-
-    def _get_next_id(self) -> int:
-        """Get the next available task ID"""
-        current_id = self._next_id
-        self._next_id += 1
-        return current_id
+            
+            # Return next ID (max_id + 1, or 1 if no tasks exist)
+            return max_id + 1 if max_id > 0 else 1
+        except Exception as e:
+            logger.warning(f"Error computing next ID for session {effective_session_id}: {e}")
+            # Fallback: return 1 if we can't compute
+            return 1
     
     def _parse_category(self, category_value: Optional[str]) -> Optional[Category]:
         """Parse category string to Category enum, with backward compatibility"""
@@ -125,7 +153,7 @@ class Database:
             task: Task data to create
             session_id: Session ID for user isolation (optional for backward compatibility)
         """
-        task_id = self._get_next_id()
+        task_id = self._get_next_id(session_id=session_id)
         created_at = datetime.now()
         
         # Generate text and embedding
@@ -135,9 +163,12 @@ class Database:
         # Prepare metadata
         metadata = self._task_to_metadata(task_id, task, created_at, session_id)
         
+        # Generate unique ChromaDB ID (composite of session_id and task_id)
+        chromadb_id = self._get_chromadb_id(task_id, session_id)
+        
         # Add to ChromaDB
         self.collection.add(
-            ids=[str(task_id)],
+            ids=[chromadb_id],
             embeddings=[embedding],
             documents=[text],
             metadatas=[metadata]
@@ -153,13 +184,26 @@ class Database:
             session_id: Session ID to verify ownership (optional for backward compatibility)
         """
         try:
+            # Try new format first (composite ID)
+            if session_id:
+                chromadb_id = self._get_chromadb_id(task_id, session_id)
+                results = self.collection.get(ids=[chromadb_id])
+                if results["ids"]:
+                    metadata = results["metadatas"][0]
+                    # Verify session_id matches
+                    if metadata.get("session_id") == session_id:
+                        return self._metadata_to_task(metadata)
+            
+            # Fallback: try old format (just task_id) for backward compatibility
+            # This handles tasks created before session-specific IDs
             results = self.collection.get(ids=[str(task_id)])
             if results["ids"]:
                 metadata = results["metadatas"][0]
-                # Verify session_id ownership if provided
+                # If session_id provided, verify ownership
                 if session_id and metadata.get("session_id") and metadata.get("session_id") != session_id:
                     logger.warning(f"Task {task_id} does not belong to session {session_id}")
                     return None
+                # If no session_id in metadata, it's an old task (backward compatibility)
                 return self._metadata_to_task(metadata)
             return None
         except Exception:
@@ -189,8 +233,8 @@ class Database:
             tasks = []
             if results["ids"]:
                 for metadata in results["metadatas"]:
-                    # Additional filter for session_id if provided (for backward compatibility)
-                    if session_id and metadata.get("session_id") and metadata.get("session_id") != session_id:
+                    # Additional filter for session_id if provided (exclude tasks without a matching session)
+                    if session_id and metadata.get("session_id") != session_id:
                         continue
                     tasks.append(self._metadata_to_task(metadata))
             
@@ -248,18 +292,53 @@ class Database:
                 updated_metadata["category"] = updated_category.value
             else:
                 updated_metadata["category"] = updated_category
-        # Preserve session_id from existing task metadata
-        existing_results = self.collection.get(ids=[str(task_id)])
-        if existing_results["ids"] and existing_results["metadatas"]:
-            existing_metadata = existing_results["metadatas"][0]
-            if existing_metadata.get("session_id"):
-                updated_metadata["session_id"] = existing_metadata["session_id"]
+        # Get the actual session_id from the existing task metadata
+        # Try composite ID first if session_id provided, then fallback to old format
+        effective_session_id = session_id
+        chromadb_id = None
+        
+        if session_id:
+            chromadb_id = self._get_chromadb_id(task_id, session_id)
+            existing_results = self.collection.get(ids=[chromadb_id])
+            if existing_results["ids"] and existing_results["metadatas"]:
+                existing_metadata = existing_results["metadatas"][0]
+                effective_session_id = existing_metadata.get("session_id") or session_id
+                updated_metadata["session_id"] = effective_session_id
+            else:
+                # Try old format for backward compatibility
+                existing_results = self.collection.get(ids=[str(task_id)])
+                if existing_results["ids"] and existing_results["metadatas"]:
+                    existing_metadata = existing_results["metadatas"][0]
+                    effective_session_id = existing_metadata.get("session_id") or "default"
+                    updated_metadata["session_id"] = effective_session_id
+                    chromadb_id = str(task_id)  # Use old format
+                else:
+                    effective_session_id = session_id
+                    updated_metadata["session_id"] = effective_session_id
+        else:
+            # No session_id provided - try old format first
+            existing_results = self.collection.get(ids=[str(task_id)])
+            if existing_results["ids"] and existing_results["metadatas"]:
+                existing_metadata = existing_results["metadatas"][0]
+                effective_session_id = existing_metadata.get("session_id") or "default"
+                updated_metadata["session_id"] = effective_session_id
+                chromadb_id = str(task_id)  # Use old format
+            else:
+                effective_session_id = "default"
+                updated_metadata["session_id"] = effective_session_id
+        
+        # Determine the final ChromaDB ID to use
+        if not chromadb_id:
+            chromadb_id = self._get_chromadb_id(task_id, effective_session_id)
         
         # Update in ChromaDB (delete and re-add since ChromaDB doesn't support partial updates well)
         # Get existing embedding if we don't need to regenerate
         if not needs_embedding_update:
             # Get existing data before deleting
-            existing_results = self.collection.get(ids=[str(task_id)])
+            existing_results = self.collection.get(ids=[chromadb_id])
+            if not existing_results["ids"]:
+                # Fallback to old format for backward compatibility
+                existing_results = self.collection.get(ids=[str(task_id)])
             if existing_results["ids"] and existing_results["embeddings"]:
                 existing_embedding = existing_results["embeddings"][0]
                 existing_text = existing_results["documents"][0]
@@ -270,8 +349,15 @@ class Database:
             existing_embedding = None
             existing_text = None
         
-        # Delete existing
-        self.collection.delete(ids=[str(task_id)])
+        # Delete existing (try both formats for backward compatibility)
+        try:
+            self.collection.delete(ids=[chromadb_id])
+        except Exception:
+            # Fallback to old format
+            try:
+                self.collection.delete(ids=[str(task_id)])
+            except Exception:
+                pass
         
         # Prepare text and embedding
         if needs_embedding_update:
@@ -282,9 +368,9 @@ class Database:
             text = existing_text or self._task_to_text(updated_task_create)
             embedding = existing_embedding or self._generate_embedding(text)
         
-        # Re-add with updated data
+        # Re-add with updated data (use composite ID)
         self.collection.add(
-            ids=[str(task_id)],
+            ids=[chromadb_id],
             embeddings=[embedding],
             documents=[text],
             metadatas=[updated_metadata]
@@ -306,7 +392,17 @@ class Database:
                 if not existing_task:
                     logger.warning(f"Task {task_id} not found or doesn't belong to session {session_id}")
                     return False
-            self.collection.delete(ids=[str(task_id)])
+                # Use composite ID for deletion
+                chromadb_id = self._get_chromadb_id(task_id, session_id)
+                self.collection.delete(ids=[chromadb_id])
+            else:
+                # Try both formats for backward compatibility
+                try:
+                    chromadb_id = self._get_chromadb_id(task_id, "default")
+                    self.collection.delete(ids=[chromadb_id])
+                except Exception:
+                    # Fallback to old format
+                    self.collection.delete(ids=[str(task_id)])
             return True
         except Exception as e:
             logger.error(f"Error deleting task: {e}", exc_info=True)
@@ -343,8 +439,8 @@ class Database:
             tasks = []
             if results["ids"] and len(results["ids"][0]) > 0:
                 for metadata in results["metadatas"][0]:
-                    # Additional filter for session_id if provided (for backward compatibility)
-                    if session_id and metadata.get("session_id") and metadata.get("session_id") != session_id:
+                    # Additional filter for session_id if provided (exclude tasks without a matching session)
+                    if session_id and metadata.get("session_id") != session_id:
                         continue
                     tasks.append(self._metadata_to_task(metadata))
             

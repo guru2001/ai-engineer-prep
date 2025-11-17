@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
+import uvicorn
 from database import Database
 from agent import TodoAgent
 from models import Task, TaskCreate, TaskUpdate
@@ -141,8 +142,6 @@ async def transcribe_audio(audio: UploadFile = File(...), language: str = "en",
     except Exception as e:
         logger.error(f"Error transcribing audio: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error transcribing audio: {str(e)}")
-
-
 
 
 @app.get("/api/tasks", response_model=TaskResponse)

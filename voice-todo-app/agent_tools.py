@@ -69,7 +69,6 @@ def parse_relative_date(date_string: str) -> datetime:
         parsed = date_parser.parse(date_string, fuzzy=True, default=now)
         # If the original string was a simple relative date without time, set to start of day
         # But preserve time if it was explicitly specified (e.g., "tomorrow at 3pm")
-        has_time_spec = any(keyword in date_string_lower for keyword in ["at ", ":", "am", "pm", "hour", "minute"])
         if not has_time_spec and ("today" in date_string_lower or "tomorrow" in date_string_lower or 
                                     "yesterday" in date_string_lower or ("day" in date_string_lower and "in " in date_string_lower)):
             parsed = parsed.replace(hour=0, minute=0, second=0, microsecond=0)
