@@ -8,7 +8,8 @@ A voice-first to-do list web application that uses natural language voice comman
 - 🤖 **LangChain Agent**: Intelligent natural language processing for understanding commands
 - 📝 **Task Management**: Tasks with title, priority, scheduled time, and category
 - 🔊 **Text-to-Speech**: Audio feedback for all actions
-- 💾 **SQLite Database**: Persistent storage for your tasks
+- 🔍 **ChromaDB Vector Database**: Semantic search capabilities for finding tasks by meaning
+- 💾 **Persistent Storage**: Local ChromaDB storage for your tasks
 
 ## Example Commands
 
@@ -30,12 +31,12 @@ pip install -e .
 
 Or install manually:
 ```bash
-pip install fastapi uvicorn langchain langchain-openai langchain-community pydantic python-dateutil
+pip install fastapi uvicorn langchain langchain-openai langchain-community pydantic python-dateutil chromadb openai
 ```
 
 ### 2. Set OpenAI API Key
 
-The app uses OpenAI's GPT models via LangChain. Set your API key:
+The app uses OpenAI's GPT models via LangChain and OpenAI embeddings for semantic search. Set your API key:
 
 ```bash
 export OPENAI_API_KEY="your-api-key-here"
@@ -79,11 +80,11 @@ The app will be available at `http://localhost:8000`
 voice-todo-app/
 ├── main.py           # FastAPI application and routes
 ├── agent.py          # LangChain agent for processing commands
-├── database.py       # SQLite database operations
+├── database.py       # ChromaDB database operations
 ├── models.py         # Pydantic models for tasks
 ├── static/
 │   └── index.html    # Frontend with voice controls
-└── todos.db          # SQLite database (created automatically)
+└── chroma_db/        # ChromaDB storage directory (created automatically)
 ```
 
 ## API Endpoints
@@ -99,6 +100,8 @@ voice-todo-app/
 
 - The app uses Web Speech API for speech-to-text (browser-based, free)
 - Text-to-speech uses the browser's built-in SpeechSynthesis API
-- Tasks are stored in a local SQLite database
+- Tasks are stored in a local ChromaDB vector database for semantic search
 - The LangChain agent uses OpenAI's GPT-4o-mini model (cost-effective)
+- Embeddings are generated using OpenAI's text-embedding-3-small model
+- Semantic search allows finding tasks by meaning, not just keywords (e.g., "meetings" finds "team sync", "standup", etc.)
 

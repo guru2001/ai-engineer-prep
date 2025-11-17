@@ -1,17 +1,41 @@
-import os
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 from database import Database
 from agent import TodoAgent
 from models import Task, TaskCreate, TaskUpdate
+from logger_config import logger
+
+# Load environment variables from .env file
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+    logger.info("Loaded environment variables from .env file")
+except ImportError:
+    # python-dotenv not installed, skip .env loading
+    pass
 
 app = FastAPI(title="Voice Todo App")
 
 # Initialize database and agent
-db = Database()
-agent = TodoAgent(db)
+logger.info("Initializing application...")
+try:
+    db = Database()
+    agent = TodoAgent(db)
+    logger.info("Application initialized successfully")
+except Exception as e:
+    logger.error(f"Failed to initialize application: {e}", exc_info=True)
+    raise
+
+# Initialize Deepgram service (required)
+from deepgram_service import DeepgramService
+try:
+    deepgram_service = DeepgramService()
+    logger.info("Deepgram service initialized")
+except Exception as e:
+    logger.error(f"Failed to initialize Deepgram service: {e}", exc_info=True)
+    raise ValueError("Deepgram service is required. Please set DEEPGRAM_API_KEY environment variable.")
 
 # Mount static files (for frontend)
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -37,18 +61,64 @@ async def read_root():
 async def process_voice_command(command: VoiceCommand):
     """Process a voice command using the LangChain agent"""
     try:
+        if not command.command or not command.command.strip():
+            raise HTTPException(status_code=400, detail="Command cannot be empty")
+        
+        logger.info(f"Received voice command: {command.command}")
         response = agent.process_command(command.command)
         # Also get updated task list
         tasks = db.get_all_tasks()
+        logger.info(f"Command processed successfully, returning {len(tasks)} tasks")
         return JSONResponse({
             "message": response,
             "tasks": [task.model_dump(mode='json') for task in tasks]
         })
+    except HTTPException:
+        raise
     except Exception as e:
-        import traceback
-        error_detail = f"{str(e)}\n{traceback.format_exc()}"
-        print(f"Error in voice-command endpoint: {error_detail}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error in voice-command endpoint: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error processing command")
+
+
+@app.post("/api/transcribe-audio")
+async def transcribe_audio(audio: UploadFile = File(...), language: str = "en"):
+    """Transcribe audio file using Deepgram API
+    
+    Args:
+        audio: Audio file (supports: mp3, wav, webm, ogg, flac, m4a, mp4, and more)
+        language: Language code (optional, auto-detects if not provided)
+    """
+    try:
+        # Read file content
+        file_content = await audio.read()
+        
+        # Create a file-like object for Deepgram
+        import io
+        audio_file = io.BytesIO(file_content)
+        
+        logger.info(f"Transcribing audio file: {audio.filename or 'unknown'} (language: {language or 'auto-detect'})")
+        
+        # Transcribe using Deepgram
+        transcript = deepgram_service.transcribe_audio(audio_file, language=language if language else None)
+        
+        # Process the transcribed command
+        response = agent.process_command(transcript)
+        tasks = db.get_all_tasks()
+        
+        logger.info(f"Audio transcribed and processed successfully")
+        return JSONResponse({
+            "transcript": transcript,
+            "message": response,
+            "tasks": [task.model_dump(mode='json') for task in tasks]
+        })
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error transcribing audio: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error transcribing audio: {str(e)}")
+
+
 
 
 @app.get("/api/tasks", response_model=TaskResponse)

@@ -233,7 +233,7 @@
                         <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
                         <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
                     </svg>
-                    Start Speaking
+                    <span id="buttonText">Start Speaking</span>
                 </button>
             </div>
             <div id="status" class="status"></div>
@@ -254,69 +254,107 @@
         const voiceButton = document.getElementById('voiceButton');
         const statusDiv = document.getElementById('status');
         const taskList = document.getElementById('taskList');
+        const buttonText = document.getElementById('buttonText');
 
-        let recognition = null;
         let isListening = false;
+        let mediaRecorder = null;
+        let audioChunks = [];
 
-        // Check for browser support
-        if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
-            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-            recognition = new SpeechRecognition();
-            recognition.continuous = false;
-            recognition.interimResults = false;
-            recognition.lang = 'en-US';
+        // Voice button click handler - always use Deepgram
+        voiceButton.addEventListener('click', async () => {
+            if (!isListening) {
+                await startDeepgramRecording();
+            } else {
+                stopRecording();
+            }
+        });
 
-            recognition.onstart = () => {
+        // Audio recording functions (Deepgram only)
+        async function startDeepgramRecording() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(stream);
+                audioChunks = [];
+
+                mediaRecorder.ondataavailable = (event) => {
+                    audioChunks.push(event.data);
+                };
+
+                mediaRecorder.onstop = async () => {
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                    await sendAudioToDeepgram(audioBlob);
+                    stream.getTracks().forEach(track => track.stop());
+                };
+
+                mediaRecorder.start();
                 isListening = true;
                 voiceButton.classList.add('recording');
-                voiceButton.innerHTML = `
-                    <svg class="mic-icon" viewBox="0 0 24 24" fill="currentColor">
-                        <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
-                        <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
-                    </svg>
-                    Listening...
-                `;
-                updateStatus('Listening...', 'listening');
-            };
+                buttonText.textContent = 'Recording...';
+                updateStatus('Recording audio...', 'listening');
+            } catch (error) {
+                console.error('Error accessing microphone:', error);
+                updateStatus('Error accessing microphone. Please check permissions.', 'error');
+            }
+        }
 
-            recognition.onresult = async (event) => {
-                const command = event.results[0][0].transcript;
-                updateStatus(`Processing: "${command}"`, 'processing');
-                await processCommand(command);
-            };
+        async function sendAudioToDeepgram(audioBlob) {
+            try {
+                updateStatus('Transcribing with Deepgram...', 'processing');
+                
+                const formData = new FormData();
+                formData.append('audio', audioBlob, 'recording.webm');
+                formData.append('language', 'en');
 
-            recognition.onerror = (event) => {
-                console.error('Speech recognition error:', event.error);
-                updateStatus(`Error: ${event.error}`, 'error');
-                resetButton();
-            };
+                const response = await fetch('/api/transcribe-audio', {
+                    method: 'POST',
+                    body: formData
+                });
 
-            recognition.onend = () => {
-                resetButton();
-            };
-
-            voiceButton.addEventListener('click', () => {
-                if (!isListening) {
-                    recognition.start();
-                } else {
-                    recognition.stop();
+                if (!response.ok) {
+                    // Try to get error message from response
+                    let errorMessage = `HTTP error! status: ${response.status}`;
+                    try {
+                        const errorData = await response.json();
+                        if (errorData.detail) {
+                            errorMessage = errorData.detail;
+                        }
+                    } catch (e) {
+                        // If response is not JSON, use default message
+                    }
+                    throw new Error(errorMessage);
                 }
-            });
-        } else {
-            voiceButton.disabled = true;
-            updateStatus('Speech recognition not supported in this browser', 'error');
+
+                const data = await response.json();
+                
+                if (data.transcript) {
+                    updateStatus(`Transcribed: "${data.transcript}"`, 'success');
+                }
+                
+                // Process the command
+                updateStatus(data.message, 'success');
+                speak(data.message);
+                renderTasks(data.tasks);
+                
+            } catch (error) {
+                console.error('Error transcribing audio:', error);
+                updateStatus(`Error: ${error.message}`, 'error');
+                speak('Deepgram is not available. Please use Browser API mode or configure Deepgram API key.');
+            } finally {
+                resetButton();
+            }
+        }
+
+        function stopRecording() {
+            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                mediaRecorder.stop();
+            }
+            resetButton();
         }
 
         function resetButton() {
             isListening = false;
             voiceButton.classList.remove('recording');
-            voiceButton.innerHTML = `
-                <svg class="mic-icon" viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
-                    <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
-                </svg>
-                Start Speaking
-            `;
+            buttonText.textContent = 'Start Speaking';
         }
 
         function updateStatus(message, type = '') {
@@ -403,6 +441,7 @@
             }
         }
 
+        // Initialize on page load
         loadTasks();
     </script>
 </body>
