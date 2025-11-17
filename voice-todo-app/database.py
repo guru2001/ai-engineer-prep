@@ -2,7 +2,7 @@ import os
 import chromadb
 from datetime import datetime
 from typing import List, Optional
-from models import Task, TaskCreate, TaskUpdate, Priority
+from models import Task, TaskCreate, TaskUpdate, Priority, Category
 from openai import OpenAI
 from logger_config import logger
 
@@ -47,6 +47,23 @@ class Database:
         current_id = self._next_id
         self._next_id += 1
         return current_id
+    
+    def _parse_category(self, category_value: Optional[str]) -> Optional[Category]:
+        """Parse category string to Category enum, with backward compatibility"""
+        if not category_value:
+            return None
+        try:
+            # Try to match by value
+            for cat in Category:
+                if cat.value.lower() == str(category_value).lower():
+                    return cat
+            # Backward compatibility: if it's a valid category string, convert it
+            category_lower = str(category_value).lower()
+            if category_lower in ["work", "personal", "administrative", "shopping"]:
+                return Category(category_lower)
+            return None
+        except (ValueError, AttributeError):
+            return None
 
     def _generate_embedding(self, text: str) -> List[float]:
         """Generate embedding for text using OpenAI"""
@@ -65,10 +82,12 @@ class Database:
         """Convert task to text for embedding"""
         parts = [task.title]
         if task.category:
-            parts.append(task.category)
+            # Handle Category enum or string
+            category_value = task.category.value if isinstance(task.category, Category) else task.category
+            parts.append(category_value)
         return " ".join(parts)
 
-    def _task_to_metadata(self, task_id: int, task: TaskCreate, created_at: datetime) -> dict:
+    def _task_to_metadata(self, task_id: int, task: TaskCreate, created_at: datetime, session_id: Optional[str] = None) -> dict:
         """Convert task to metadata dict for ChromaDB"""
         metadata = {
             "id": str(task_id),
@@ -79,7 +98,9 @@ class Database:
         if task.scheduled_time:
             metadata["scheduled_time"] = task.scheduled_time.isoformat()
         if task.category:
-            metadata["category"] = task.category
+            metadata["category"] = task.category.value if isinstance(task.category, Category) else task.category
+        if session_id:
+            metadata["session_id"] = session_id
         return metadata
 
     def _metadata_to_task(self, metadata: dict) -> Task:
@@ -93,12 +114,17 @@ class Database:
             title=metadata["title"],
             scheduled_time=scheduled_time,
             priority=Priority(metadata["priority"]),
-            category=metadata.get("category"),
+            category=self._parse_category(metadata.get("category")),
             created_at=datetime.fromisoformat(metadata["created_at"])
         )
 
-    def create_task(self, task: TaskCreate) -> Task:
-        """Create a new task"""
+    def create_task(self, task: TaskCreate, session_id: Optional[str] = None) -> Task:
+        """Create a new task
+        
+        Args:
+            task: Task data to create
+            session_id: Session ID for user isolation (optional for backward compatibility)
+        """
         task_id = self._get_next_id()
         created_at = datetime.now()
         
@@ -107,7 +133,7 @@ class Database:
         embedding = self._generate_embedding(text)
         
         # Prepare metadata
-        metadata = self._task_to_metadata(task_id, task, created_at)
+        metadata = self._task_to_metadata(task_id, task, created_at, session_id)
         
         # Add to ChromaDB
         self.collection.add(
@@ -117,34 +143,55 @@ class Database:
             metadatas=[metadata]
         )
         
-        return self.get_task(task_id)
+        return self.get_task(task_id, session_id)
 
-    def get_task(self, task_id: int) -> Optional[Task]:
-        """Get a task by ID"""
+    def get_task(self, task_id: int, session_id: Optional[str] = None) -> Optional[Task]:
+        """Get a task by ID
+        
+        Args:
+            task_id: Task ID to retrieve
+            session_id: Session ID to verify ownership (optional for backward compatibility)
+        """
         try:
             results = self.collection.get(ids=[str(task_id)])
             if results["ids"]:
                 metadata = results["metadatas"][0]
+                # Verify session_id ownership if provided
+                if session_id and metadata.get("session_id") and metadata.get("session_id") != session_id:
+                    logger.warning(f"Task {task_id} does not belong to session {session_id}")
+                    return None
                 return self._metadata_to_task(metadata)
             return None
         except Exception:
             return None
 
-    def get_all_tasks(self, category: Optional[str] = None) -> List[Task]:
-        """Get all tasks, optionally filtered by category"""
+    def get_all_tasks(self, category: Optional[str] = None, session_id: Optional[str] = None) -> List[Task]:
+        """Get all tasks, optionally filtered by category and session_id
+        
+        Args:
+            category: Optional category filter
+            session_id: Session ID to filter tasks (optional for backward compatibility)
+        """
         try:
+            # Build where clause for filtering
+            where_clause = {}
+            if session_id:
+                where_clause["session_id"] = session_id
             if category:
-                # Filter by category in metadata
-                results = self.collection.get(
-                    where={"category": category}
-                )
+                where_clause["category"] = category
+            
+            if where_clause:
+                results = self.collection.get(where=where_clause)
             else:
-                # Get all tasks
+                # Get all tasks (backward compatibility - no filters)
                 results = self.collection.get()
             
             tasks = []
             if results["ids"]:
                 for metadata in results["metadatas"]:
+                    # Additional filter for session_id if provided (for backward compatibility)
+                    if session_id and metadata.get("session_id") and metadata.get("session_id") != session_id:
+                        continue
                     tasks.append(self._metadata_to_task(metadata))
             
             # Sort by created_at descending
@@ -154,9 +201,15 @@ class Database:
             logger.error(f"Error getting tasks: {e}", exc_info=True)
             return []
 
-    def update_task(self, task_id: int, task_update: TaskUpdate) -> Optional[Task]:
-        """Update a task"""
-        existing_task = self.get_task(task_id)
+    def update_task(self, task_id: int, task_update: TaskUpdate, session_id: Optional[str] = None) -> Optional[Task]:
+        """Update a task
+        
+        Args:
+            task_id: Task ID to update
+            task_update: Task update data
+            session_id: Session ID to verify ownership (optional for backward compatibility)
+        """
+        existing_task = self.get_task(task_id, session_id)
         if not existing_task:
             return None
         
@@ -180,7 +233,7 @@ class Database:
             scheduled_time=updated_scheduled_time
         )
         
-        # Prepare updated metadata
+        # Prepare updated metadata (preserve session_id from existing task)
         updated_metadata = {
             "id": str(task_id),
             "title": updated_title,
@@ -190,7 +243,17 @@ class Database:
         if updated_scheduled_time:
             updated_metadata["scheduled_time"] = updated_scheduled_time.isoformat()
         if updated_category:
-            updated_metadata["category"] = updated_category
+            # Handle Category enum or string
+            if isinstance(updated_category, Category):
+                updated_metadata["category"] = updated_category.value
+            else:
+                updated_metadata["category"] = updated_category
+        # Preserve session_id from existing task metadata
+        existing_results = self.collection.get(ids=[str(task_id)])
+        if existing_results["ids"] and existing_results["metadatas"]:
+            existing_metadata = existing_results["metadatas"][0]
+            if existing_metadata.get("session_id"):
+                updated_metadata["session_id"] = existing_metadata["session_id"]
         
         # Update in ChromaDB (delete and re-add since ChromaDB doesn't support partial updates well)
         # Get existing embedding if we don't need to regenerate
@@ -227,31 +290,62 @@ class Database:
             metadatas=[updated_metadata]
         )
         
-        return self.get_task(task_id)
+        return self.get_task(task_id, session_id)
 
-    def delete_task(self, task_id: int) -> bool:
-        """Delete a task"""
+    def delete_task(self, task_id: int, session_id: Optional[str] = None) -> bool:
+        """Delete a task
+        
+        Args:
+            task_id: Task ID to delete
+            session_id: Session ID to verify ownership (optional for backward compatibility)
+        """
         try:
+            # Verify ownership if session_id provided
+            if session_id:
+                existing_task = self.get_task(task_id, session_id)
+                if not existing_task:
+                    logger.warning(f"Task {task_id} not found or doesn't belong to session {session_id}")
+                    return False
             self.collection.delete(ids=[str(task_id)])
             return True
-        except Exception:
+        except Exception as e:
+            logger.error(f"Error deleting task: {e}", exc_info=True)
             return False
 
-    def search_tasks(self, query: str) -> List[Task]:
-        """Search tasks using semantic search"""
+    def search_tasks(self, query: str, session_id: Optional[str] = None) -> List[Task]:
+        """Search tasks using semantic search
+        
+        Args:
+            query: Search query string
+            session_id: Session ID to filter tasks (optional for backward compatibility)
+        """
         try:
+            if not query or not query.strip():
+                return []
+            
+            query = query.strip()
+            
             # Generate embedding for query
             query_embedding = self._generate_embedding(query)
+            
+            # Build where clause for filtering by session_id
+            where_clause = None
+            if session_id:
+                where_clause = {"session_id": session_id}
             
             # Perform semantic search
             results = self.collection.query(
                 query_embeddings=[query_embedding],
-                n_results=10  # Return top 10 matches
+                n_results=10,  # Return top 10 matches
+                where=where_clause if where_clause else None
             )
             
             tasks = []
             if results["ids"] and len(results["ids"][0]) > 0:
                 for metadata in results["metadatas"][0]:
+                    # Additional filter for session_id if provided (for backward compatibility)
+                    if session_id and metadata.get("session_id") and metadata.get("session_id") != session_id:
+                        continue
                     tasks.append(self._metadata_to_task(metadata))
             
             # Sort by created_at descending

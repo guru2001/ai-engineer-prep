@@ -10,11 +10,18 @@ class Priority(str, Enum):
     HIGH = "high"
 
 
+class Category(str, Enum):
+    WORK = "work"
+    PERSONAL = "personal"
+    ADMINISTRATIVE = "administrative"
+    SHOPPING = "shopping"
+
+
 class TaskBase(BaseModel):
     title: str
     scheduled_time: Optional[datetime] = None
     priority: Priority = Priority.MEDIUM
-    category: Optional[str] = None
+    category: Optional[Category] = None
 
 
 class TaskCreate(TaskBase):
@@ -25,7 +32,7 @@ class TaskUpdate(BaseModel):
     title: Optional[str] = None
     scheduled_time: Optional[datetime] = None
     priority: Optional[Priority] = None
-    category: Optional[str] = None
+    category: Optional[Category] = None
 
 
 class Task(TaskBase):

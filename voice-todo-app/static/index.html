@@ -259,6 +259,33 @@
         let isListening = false;
         let mediaRecorder = null;
         let audioChunks = [];
+        let chatHistory = [];
+        
+        // Generate unique session ID and persist in localStorage
+        function getOrCreateSessionId() {
+            try {
+                let sessionId = localStorage.getItem('sessionId');
+                // Check if sessionId exists and is valid (not empty/null)
+                if (!sessionId || sessionId.trim() === '') {
+                    // Use crypto.randomUUID() if available, otherwise generate a unique ID
+                    sessionId = (typeof crypto !== 'undefined' && crypto.randomUUID) 
+                        ? crypto.randomUUID() 
+                        : `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+                    localStorage.setItem('sessionId', sessionId);
+                    console.log('Created new session ID:', sessionId);
+                } else {
+                    console.log('Retrieved existing session ID:', sessionId);
+                }
+                return sessionId;
+            } catch (error) {
+                // Fallback if localStorage is not available
+                console.warn('localStorage not available, using temporary session ID:', error);
+                return `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+            }
+        }
+        
+        // Initialize session ID immediately
+        const sessionId = getOrCreateSessionId();
 
         // Voice button click handler - always use Deepgram
         voiceButton.addEventListener('click', async () => {
@@ -304,6 +331,12 @@
                 const formData = new FormData();
                 formData.append('audio', audioBlob, 'recording.webm');
                 formData.append('language', 'en');
+                // Ensure we have the current session ID
+                const currentSessionId = getOrCreateSessionId();
+                formData.append('session_id', currentSessionId);
+                if (chatHistory.length > 0) {
+                    formData.append('chat_history', JSON.stringify(chatHistory));
+                }
 
                 const response = await fetch('/api/transcribe-audio', {
                     method: 'POST',
@@ -328,6 +361,11 @@
                 
                 if (data.transcript) {
                     updateStatus(`Transcribed: "${data.transcript}"`, 'success');
+                }
+                
+                // Update chat history (for context, not displayed)
+                if (data.chat_history) {
+                    chatHistory = data.chat_history;
                 }
                 
                 // Process the command
@@ -369,11 +407,20 @@
                     headers: {
                         'Content-Type': 'application/json',
                     },
-                    body: JSON.stringify({ command }),
+                    body: JSON.stringify({ 
+                        command,
+                        session_id: getOrCreateSessionId(),
+                        chat_history: chatHistory
+                    }),
                 });
 
                 const data = await response.json();
                 updateStatus(data.message, 'success');
+                
+                // Update chat history (for context, not displayed)
+                if (data.chat_history) {
+                    chatHistory = data.chat_history;
+                }
                 
                 // Speak the response
                 speak(data.message);
@@ -415,6 +462,7 @@
                     <div class="task-item">
                         <div class="task-title">${escapeHtml(task.title)}</div>
                         <div class="task-meta">
+                            <span>🆔 ID: ${task.id}</span>
                             ${task.category ? `<span>📁 ${escapeHtml(task.category)}</span>` : ''}
                             <span class="priority ${priorityClass}">${priorityClass.toUpperCase()}</span>
                             <span>📅 ${scheduled}</span>
@@ -433,7 +481,9 @@
         // Load tasks on page load
         async function loadTasks() {
             try {
-                const response = await fetch('/api/tasks');
+                // Ensure sessionId is available (re-fetch if needed)
+                const currentSessionId = getOrCreateSessionId();
+                const response = await fetch(`/api/tasks?session_id=${encodeURIComponent(currentSessionId)}`);
                 const data = await response.json();
                 renderTasks(data.tasks);
             } catch (error) {
@@ -442,7 +492,12 @@
         }
 
         // Initialize on page load
-        loadTasks();
+        // Use DOMContentLoaded to ensure everything is ready
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', loadTasks);
+        } else {
+            loadTasks();
+        }
     </script>
 </body>
 </html>
