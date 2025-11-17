@@ -63,18 +63,6 @@ def parse_relative_date(date_string: str) -> datetime:
         next_week = now + timedelta(days=days_ahead)
         return next_week.replace(hour=0, minute=0, second=0, microsecond=0)
     
-    elif date_string_lower.startswith("in ") and " day" in date_string_lower:
-        # Handle "in X days" or "in X day"
-        try:
-            # Extract number from "in 2 days" or "in 1 day"
-            parts = date_string_lower.split()
-            if len(parts) >= 3 and parts[0] == "in":
-                num_days = int(parts[1])
-                future_date = now + timedelta(days=num_days)
-                return future_date.replace(hour=0, minute=0, second=0, microsecond=0)
-        except (ValueError, IndexError):
-            pass
-    
     # Try to parse with dateutil (handles absolute dates and more complex relative dates)
     # This handles cases like "tomorrow at 3pm", "next Monday", "December 25th", etc.
     try:
@@ -219,6 +207,10 @@ def create_agent_tools(db: Database, session_id: Optional[str] = None):
 
             if not task_id:
                 return "Please specify a task ID or title to update."
+
+            existing_task = db.get_task(task_id, session_id=session_id)
+            if not existing_task:
+                return f"Task ID {task_id} not found."
 
             # Build update data
             update_data = {}
