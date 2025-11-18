@@ -3,7 +3,7 @@ import chromadb
 from datetime import datetime
 from typing import List, Optional
 from models import Task, TaskCreate, TaskUpdate, Priority, Category
-from openai import OpenAI
+from openai import AsyncOpenAI
 from logger_config import logger
 
 
@@ -16,8 +16,8 @@ class Database:
             metadata={"hnsw:space": "cosine"}
         )
         
-        # Initialize OpenAI client for embeddings
-        self.openai_client = OpenAI(api_key=openai_api_key or os.getenv("OPENAI_API_KEY"))
+        # Initialize OpenAI client for embeddings (async)
+        self.openai_client = AsyncOpenAI(api_key=openai_api_key or os.getenv("OPENAI_API_KEY"))
         self.embedding_model = "text-embedding-3-small"
 
     def _get_chromadb_id(self, task_id: int, session_id: Optional[str] = None) -> str:
@@ -93,10 +93,10 @@ class Database:
         except (ValueError, AttributeError):
             return None
 
-    def _generate_embedding(self, text: str) -> List[float]:
-        """Generate embedding for text using OpenAI"""
+    async def _generate_embedding(self, text: str) -> List[float]:
+        """Generate embedding for text using OpenAI (async)"""
         try:
-            response = self.openai_client.embeddings.create(
+            response = await self.openai_client.embeddings.create(
                 model=self.embedding_model,
                 input=text
             )
@@ -146,8 +146,8 @@ class Database:
             created_at=datetime.fromisoformat(metadata["created_at"])
         )
 
-    def create_task(self, task: TaskCreate, session_id: Optional[str] = None) -> Task:
-        """Create a new task
+    async def create_task(self, task: TaskCreate, session_id: Optional[str] = None) -> Task:
+        """Create a new task (async)
         
         Args:
             task: Task data to create
@@ -156,9 +156,9 @@ class Database:
         task_id = self._get_next_id(session_id=session_id)
         created_at = datetime.now()
         
-        # Generate text and embedding
+        # Generate text and embedding (async)
         text = self._task_to_text(task)
-        embedding = self._generate_embedding(text)
+        embedding = await self._generate_embedding(text)
         
         # Prepare metadata
         metadata = self._task_to_metadata(task_id, task, created_at, session_id)
@@ -245,7 +245,7 @@ class Database:
             logger.error(f"Error getting tasks: {e}", exc_info=True)
             return []
 
-    def update_task(self, task_id: int, task_update: TaskUpdate, session_id: Optional[str] = None) -> Optional[Task]:
+    async def update_task(self, task_id: int, task_update: TaskUpdate, session_id: Optional[str] = None) -> Optional[Task]:
         """Update a task
         
         Args:
@@ -362,11 +362,11 @@ class Database:
         # Prepare text and embedding
         if needs_embedding_update:
             text = self._task_to_text(updated_task_create)
-            embedding = self._generate_embedding(text)
+            embedding = await self._generate_embedding(text)
         else:
             # Use existing text and embedding
             text = existing_text or self._task_to_text(updated_task_create)
-            embedding = existing_embedding or self._generate_embedding(text)
+            embedding = existing_embedding or await self._generate_embedding(text)
         
         # Re-add with updated data (use composite ID)
         self.collection.add(
@@ -408,8 +408,8 @@ class Database:
             logger.error(f"Error deleting task: {e}", exc_info=True)
             return False
 
-    def search_tasks(self, query: str, session_id: Optional[str] = None) -> List[Task]:
-        """Search tasks using semantic search
+    async def search_tasks(self, query: str, session_id: Optional[str] = None) -> List[Task]:
+        """Search tasks using semantic search (async)
         
         Args:
             query: Search query string
@@ -421,8 +421,8 @@ class Database:
             
             query = query.strip()
             
-            # Generate embedding for query
-            query_embedding = self._generate_embedding(query)
+            # Generate embedding for query (async)
+            query_embedding = await self._generate_embedding(query)
             
             # Build where clause for filtering by session_id
             where_clause = None

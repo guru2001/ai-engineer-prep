@@ -3,6 +3,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 import uvicorn
+import asyncio
+import json
+import io
 from database import Database
 from agent import TodoAgent
 from models import Task, TaskCreate, TaskUpdate
@@ -73,10 +76,11 @@ async def process_voice_command(command: VoiceCommand):
             session_id=command.session_id,
             chat_history=command.chat_history
         )
-        # Also get updated task list (filtered by session_id)
-        tasks = db.get_all_tasks(session_id=command.session_id)
-        # Get updated chat history
-        chat_history = agent.get_chat_history(command.session_id)
+        # Parallelize independent operations: get tasks and chat history concurrently
+        tasks, chat_history = await asyncio.gather(
+            asyncio.to_thread(db.get_all_tasks, session_id=command.session_id),
+            asyncio.to_thread(agent.get_chat_history, command.session_id)
+        )
         logger.info(f"Command processed successfully, returning {len(tasks)} tasks")
         return JSONResponse({
             "message": response,
@@ -106,14 +110,12 @@ async def transcribe_audio(audio: UploadFile = File(...), language: str = "en",
         file_content = await audio.read()
         
         # Create a file-like object for Deepgram
-        import io
-        import json
         audio_file = io.BytesIO(file_content)
         
         logger.info(f"Transcribing audio file: {audio.filename or 'unknown'} (language: {language or 'auto-detect'}, session: {session_id})")
         
-        # Transcribe using Deepgram
-        transcript = deepgram_service.transcribe_audio(audio_file, language=language if language else None)
+        # Transcribe using Deepgram (async)
+        transcript = await deepgram_service.transcribe_audio(audio_file, language=language if language else None)
         
         # Parse chat history if provided
         history = None
@@ -125,9 +127,12 @@ async def transcribe_audio(audio: UploadFile = File(...), language: str = "en",
         
         # Process the transcribed command
         response = agent.process_command(transcript, session_id=session_id, chat_history=history)
-        tasks = db.get_all_tasks(session_id=session_id)
-        # Get updated chat history
-        updated_history = agent.get_chat_history(session_id)
+        
+        # Parallelize independent operations: get tasks and chat history concurrently
+        tasks, updated_history = await asyncio.gather(
+            asyncio.to_thread(db.get_all_tasks, session_id=session_id),
+            asyncio.to_thread(agent.get_chat_history, session_id)
+        )
         
         logger.info(f"Audio transcribed and processed successfully")
         return JSONResponse({
@@ -151,42 +156,10 @@ async def get_tasks(category: str = None, session_id: str = "default"):
     return TaskResponse(tasks=tasks, message=f"Found {len(tasks)} task(s)")
 
 
-@app.post("/api/tasks", response_model=Task)
-async def create_task(task: TaskCreate, session_id: str = "default"):
-    """Create a new task"""
-    return db.create_task(task, session_id=session_id)
-
-
-@app.put("/api/tasks/{task_id}", response_model=Task)
-async def update_task(task_id: int, task: TaskUpdate, session_id: str = "default"):
-    """Update a task"""
-    updated = db.update_task(task_id, task, session_id=session_id)
-    if not updated:
-        raise HTTPException(status_code=404, detail="Task not found")
-    return updated
-
-
-@app.delete("/api/tasks/{task_id}")
-async def delete_task(task_id: int, session_id: str = "default"):
-    """Delete a task"""
-    success = db.delete_task(task_id, session_id=session_id)
-    if not success:
-        raise HTTPException(status_code=404, detail="Task not found")
-    return {"message": "Task deleted successfully"}
-
-
-@app.get("/api/chat-history")
-async def get_chat_history(session_id: str = "default"):
-    """Get chat history for a session"""
-    history = agent.get_chat_history(session_id)
-    return JSONResponse({"chat_history": history})
-
-
-@app.delete("/api/chat-history")
-async def clear_chat_history(session_id: str = "default"):
-    """Clear chat history for a session"""
-    agent.clear_chat_history(session_id)
-    return JSONResponse({"message": f"Chat history cleared for session: {session_id}"})
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Cleanup on application shutdown"""
+    await deepgram_service.close()
 
 
 if __name__ == "__main__":

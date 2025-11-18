@@ -1,4 +1,6 @@
 """Agent tools for task management"""
+import asyncio
+import re
 from typing import Optional
 from datetime import datetime, timedelta
 from langchain.tools import tool
@@ -6,6 +8,24 @@ from database import Database
 from models import TaskCreate, TaskUpdate, Priority, Category
 from dateutil import parser as date_parser
 from logger_config import logger
+
+
+def run_async(coro):
+    """Helper to run async code from sync context, handling existing event loops"""
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # If loop is running, we need to use a different approach
+            # Create a new task in a thread-safe way
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(asyncio.run, coro)
+                return future.result()
+        else:
+            return loop.run_until_complete(coro)
+    except RuntimeError:
+        # No event loop, create a new one
+        return asyncio.run(coro)
 
 
 def parse_relative_date(date_string: str) -> datetime:
@@ -18,7 +38,7 @@ def parse_relative_date(date_string: str) -> datetime:
         datetime object with the parsed date
         
     Raises:
-        ValueError: If date cannot be parsed
+        ValueError: If date cannot be parsed or string is not a valid date
     """
     if not date_string:
         raise ValueError("Date string cannot be empty")
@@ -26,8 +46,24 @@ def parse_relative_date(date_string: str) -> datetime:
     date_string_lower = date_string.lower().strip()
     now = datetime.now()
     
+    # Reject strings that are clearly not dates (e.g., "time is wrong", "date is wrong")
+    # These are complaints or statements, not date specifications
+    non_date_phrases = [
+        "time is", "date is", "time was", "date was", 
+        "wrong time", "wrong date", "incorrect time", "incorrect date",
+        "time wrong", "date wrong", "time incorrect", "date incorrect"
+    ]
+    if any(phrase in date_string_lower for phrase in non_date_phrases):
+        raise ValueError(f"String '{date_string}' appears to be a statement about time/date, not a date specification")
+    
     # Check if time is specified (e.g., "tomorrow at 3pm")
-    has_time_spec = any(keyword in date_string_lower for keyword in ["at ", ":", "am", "pm", "hour", "minute"])
+    # More specific patterns to avoid false positives
+    has_time_spec = (
+        " at " in date_string_lower or 
+        re.search(r'\d{1,2}:\d{2}', date_string_lower) or  # HH:MM format
+        re.search(r'\d{1,2}\s*(am|pm)', date_string_lower) or  # 3pm, 3 pm
+        ("hour" in date_string_lower and any(word in date_string_lower for word in ["in", "at", "by"]))
+    )
     
     # Handle relative dates
     if date_string_lower == "today" or date_string_lower.startswith("today "):
@@ -63,18 +99,39 @@ def parse_relative_date(date_string: str) -> datetime:
         next_week = now + timedelta(days=days_ahead)
         return next_week.replace(hour=0, minute=0, second=0, microsecond=0)
     
+    # Handle "in X days/hours" patterns
+    in_days_match = re.search(r'in\s+(\d+)\s+days?', date_string_lower)
+    if in_days_match:
+        days = int(in_days_match.group(1))
+        future_date = now + timedelta(days=days)
+        return future_date.replace(hour=0, minute=0, second=0, microsecond=0)
+    
     # Try to parse with dateutil (handles absolute dates and more complex relative dates)
     # This handles cases like "tomorrow at 3pm", "next Monday", "December 25th", etc.
+    # Use fuzzy=False for more strict parsing to avoid false positives
     try:
-        parsed = date_parser.parse(date_string, fuzzy=True, default=now)
+        # First try strict parsing
+        parsed = date_parser.parse(date_string, fuzzy=False, default=now)
         # If the original string was a simple relative date without time, set to start of day
-        # But preserve time if it was explicitly specified (e.g., "tomorrow at 3pm")
         if not has_time_spec and ("today" in date_string_lower or "tomorrow" in date_string_lower or 
                                     "yesterday" in date_string_lower or ("day" in date_string_lower and "in " in date_string_lower)):
             parsed = parsed.replace(hour=0, minute=0, second=0, microsecond=0)
         return parsed
-    except Exception as e:
-        raise ValueError(f"Could not parse date '{date_string}': {str(e)}")
+    except (ValueError, TypeError):
+        # If strict parsing fails, try fuzzy but be more careful
+        try:
+            parsed = date_parser.parse(date_string, fuzzy=True, default=now)
+            # Validate that we actually got a reasonable date (not too far in past/future)
+            # If parsed date is more than 100 years away, it's probably wrong
+            if abs((parsed - now).days) > 36500:
+                raise ValueError(f"Parsed date '{parsed}' seems incorrect for input '{date_string}'")
+            
+            if not has_time_spec and ("today" in date_string_lower or "tomorrow" in date_string_lower or 
+                                        "yesterday" in date_string_lower or ("day" in date_string_lower and "in " in date_string_lower)):
+                parsed = parsed.replace(hour=0, minute=0, second=0, microsecond=0)
+            return parsed
+        except Exception as e:
+            raise ValueError(f"Could not parse date '{date_string}': {str(e)}")
 
 
 def create_agent_tools(db: Database, session_id: Optional[str] = None):
@@ -170,7 +227,8 @@ def create_agent_tools(db: Database, session_id: Optional[str] = None):
                 scheduled_time=scheduled_dt,
                 category=category_enum
             )
-            created = db.create_task(task, session_id=session_id)
+            # Run async database call in sync context
+            created = run_async(db.create_task(task, session_id=session_id))
             logger.info(f"Created task: {created.id} - {created.title}")
             return f"Created task: '{created.title}' (ID: {created.id})"
         except ValueError as e:
@@ -197,7 +255,7 @@ def create_agent_tools(db: Database, session_id: Optional[str] = None):
         try:
             # Find task if not ID provided
             if not task_id and task_title:
-                tasks = db.search_tasks(task_title, session_id=session_id)
+                tasks = run_async(db.search_tasks(task_title, session_id=session_id))
                 if tasks:
                     task_id = tasks[0].id
                     logger.debug(f"Found task by title '{task_title}': ID {task_id}")
@@ -249,7 +307,7 @@ def create_agent_tools(db: Database, session_id: Optional[str] = None):
                 return "No update fields provided."
 
             task_update = TaskUpdate(**update_data)
-            updated = db.update_task(task_id, task_update, session_id=session_id)
+            updated = run_async(db.update_task(task_id, task_update, session_id=session_id))
 
             if updated:
                 logger.info(f"Updated task: {task_id}")
@@ -265,28 +323,22 @@ def create_agent_tools(db: Database, session_id: Optional[str] = None):
 
     @tool
     def delete_task(task_id: Optional[int] = None, task_title: Optional[str] = None, task_number: Optional[int] = None) -> str:
-        """Delete a task. You can identify it by ID, title search, or position number.
+        """Delete a task. You can identify it by ID, title search, or task number (which is the task ID).
         
         Args:
             task_id: The task ID (if known)
             task_title: Search for task by title (partial match like "compliances")
-            task_number: The position number (e.g., "4th task" = 4)
+            task_number: The task ID (e.g., "delete task 3" means delete task with ID 3)
         """
         try:
-            # Find task by number
-            if task_number:
-                if task_number < 1:
-                    return f"Error: Task number must be at least 1, got {task_number}."
-                tasks = db.get_all_tasks(session_id=session_id)
-                if 1 <= task_number <= len(tasks):
-                    task_id = tasks[task_number - 1].id
-                    logger.debug(f"Found task by number {task_number}: ID {task_id}")
-                else:
-                    return f"Task number {task_number} not found. There are {len(tasks)} task(s)."
+            # If task_number is provided, treat it as task_id
+            if task_number and not task_id:
+                task_id = task_number
+                logger.debug(f"Using task_number {task_number} as task_id")
 
             # Find task by title
             if not task_id and task_title:
-                tasks = db.search_tasks(task_title, session_id=session_id)
+                tasks = run_async(db.search_tasks(task_title, session_id=session_id))
                 if tasks:
                     task_id = tasks[0].id
                     logger.debug(f"Found task by title '{task_title}': ID {task_id}")
@@ -319,7 +371,7 @@ def create_agent_tools(db: Database, session_id: Optional[str] = None):
             if not query or not query.strip():
                 return "Error: Search query cannot be empty."
             
-            tasks = db.search_tasks(query.strip(), session_id=session_id)
+            tasks = run_async(db.search_tasks(query.strip(), session_id=session_id))
             if not tasks:
                 return f"No tasks found matching '{query}'."
             

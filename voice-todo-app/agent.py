@@ -73,10 +73,16 @@ class TodoAgent:
             - LOW: "low", "not important", "whenever", "optional"
 
             **Time Parsing:**
+            Only extract scheduled_time when the user explicitly mentions scheduling a task for a specific date/time.
             Parse natural language dates like:
             - "tomorrow", "today", "next week", "in 2 days"
             - "December 25th", "2024-12-25", "next Monday"
             - Relative times: "in 3 hours", "next month"
+            
+            **IMPORTANT - Do NOT extract dates from:**
+            - Complaints or statements about time/date (e.g., "the time is wrong", "date is incorrect")
+            - General mentions of time/date that aren't scheduling requests
+            - Only extract scheduled_time when the user is clearly scheduling a task (e.g., "create a task for tomorrow", "set task to next week")
 
             **Best Practices:**
             1. Always confirm actions clearly (e.g., "Created task: 'Buy groceries' (ID: 5)")
@@ -84,6 +90,7 @@ class TodoAgent:
             3. When updating, be specific about what changed
             4. For ambiguous requests, ask for clarification or use search_tasks first
             5. Be concise but informative in responses
+            6. Only extract scheduled_time when the user explicitly wants to schedule a task
 
             Always be helpful, accurate, and confirm what actions you've taken."""
 

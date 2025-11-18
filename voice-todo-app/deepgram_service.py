@@ -1,7 +1,7 @@
 """Deepgram service for speech-to-text"""
 import os
 from typing import Optional
-import requests
+import httpx
 from logger_config import logger
 
 
@@ -20,10 +20,15 @@ class DeepgramService:
         
         self.api_key = api_key
         self.base_url = "https://api.deepgram.com/v1/listen"
-        logger.info("DeepgramService initialized")
+        # Create a persistent async HTTP client with connection pooling
+        self.client = httpx.AsyncClient(
+            timeout=30.0,
+            limits=httpx.Limits(max_keepalive_connections=10, max_connections=20)
+        )
+        logger.info("DeepgramService initialized with async HTTP client")
     
-    def transcribe_audio(self, audio_file, language: Optional[str] = None) -> str:
-        """Transcribe audio file to text using Deepgram REST API
+    async def transcribe_audio(self, audio_file, language: Optional[str] = None) -> str:
+        """Transcribe audio file to text using Deepgram REST API (async)
         
         Args:
             audio_file: File-like object (BytesIO) containing audio data
@@ -57,14 +62,13 @@ class DeepgramService:
                 'Content-Type': 'audio/webm',  # Adjust based on actual audio format
             }
             
-            # Make API request
+            # Make async API request
             # Deepgram expects the audio file as raw data
-            response = requests.post(
+            response = await self.client.post(
                 self.base_url,
                 params=params,
                 headers=headers,
-                data=audio_data,
-                timeout=30
+                content=audio_data
             )
             
             # Check response
@@ -80,10 +84,14 @@ class DeepgramService:
             else:
                 raise Exception("No transcript found in Deepgram response")
             
-        except requests.exceptions.RequestException as e:
+        except httpx.HTTPError as e:
             logger.error(f"Deepgram API request error: {e}", exc_info=True)
             raise Exception(f"Failed to transcribe audio: {str(e)}")
         except Exception as e:
             logger.error(f"Deepgram transcription error: {e}", exc_info=True)
             raise Exception(f"Failed to transcribe audio: {str(e)}")
+    
+    async def close(self):
+        """Close the HTTP client"""
+        await self.client.aclose()
 
