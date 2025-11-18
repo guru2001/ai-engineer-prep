@@ -218,6 +218,74 @@
             width: 20px;
             height: 20px;
         }
+
+        .examples-section {
+            background: #f8f9fa;
+            border-radius: 15px;
+            padding: 25px;
+            margin-top: 30px;
+            border: 2px solid #e9ecef;
+        }
+
+        .examples-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 20px;
+            color: #667eea;
+        }
+
+        .examples-header h3 {
+            font-size: 1.3em;
+            font-weight: 600;
+        }
+
+        .examples-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 20px;
+        }
+
+        .example-category {
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+
+        .example-category h4 {
+            color: #333;
+            margin-bottom: 12px;
+            font-size: 1.1em;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .example-list {
+            list-style: none;
+            padding: 0;
+        }
+
+        .example-list li {
+            padding: 8px 12px;
+            margin-bottom: 6px;
+            background: #f8f9fa;
+            border-radius: 6px;
+            font-size: 0.9em;
+            color: #555;
+            border-left: 3px solid #667eea;
+            transition: all 0.2s;
+        }
+
+        .example-list li:hover {
+            background: #e9ecef;
+            transform: translateX(3px);
+        }
+
+        .example-icon {
+            font-size: 1.2em;
+        }
     </style>
 </head>
 <body>
@@ -237,13 +305,52 @@
                 </button>
             </div>
             <div id="status" class="status"></div>
+            
             <div class="tasks-container">
                 <div class="tasks-header">
                     <h2>Your Tasks</h2>
                 </div>
                 <div id="taskList" class="task-list">
                     <div class="empty-state">
-                        <p>No tasks yet. Try saying: "Create a task to buy groceries"</p>
+                        <p>No tasks yet. Check the example commands below to get started!</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Example Commands Section - Always Visible -->
+            <div class="examples-section">
+                <div class="examples-header">
+                    <span class="example-icon">💡</span>
+                    <h3>Example Voice Commands</h3>
+                </div>
+                <div class="examples-grid">
+                    <div class="example-category">
+                        <h4><span>➕</span> Create Tasks</h4>
+                        <ul class="example-list">
+                            <li>"Create a task to buy groceries"</li>
+                            <li>"Add a high priority task for fixing bugs"</li>
+                        </ul>
+                    </div>
+                    <div class="example-category">
+                        <h4><span>✏️</span> Update Tasks</h4>
+                        <ul class="example-list">
+                            <li>"Update task 1 to high priority"</li>
+                            <li>"Change the grocery task to tomorrow"</li>
+                        </ul>
+                    </div>
+                    <div class="example-category">
+                        <h4><span>🗑️</span> Delete Tasks</h4>
+                        <ul class="example-list">
+                            <li>"Delete task 3"</li>
+                            <li>"Remove the grocery task"</li>
+                        </ul>
+                    </div>
+                    <div class="example-category">
+                        <h4><span>📋</span> List & Search</h4>
+                        <ul class="example-list">
+                            <li>"Show me all tasks"</li>
+                            <li>"Find tasks about meetings"</li>
+                        </ul>
                     </div>
                 </div>
             </div>
@@ -260,6 +367,14 @@
         let mediaRecorder = null;
         let audioChunks = [];
         let chatHistory = [];
+        let audioContext = null;
+        let analyser = null;
+        let microphone = null;
+        let silenceTimer = null;
+        let silenceStartTime = null;
+        const SILENCE_THRESHOLD = 30; // Audio level threshold (0-255, lower = more sensitive)
+        const SILENCE_DURATION = 1500; // Stop after 1.5 seconds of silence
+        const MIN_RECORDING_TIME = 500; // Minimum recording time before auto-stop (0.5 seconds)
         
         // Generate unique session ID and persist in localStorage
         function getOrCreateSessionId() {
@@ -300,6 +415,17 @@
         async function startDeepgramRecording() {
             try {
                 const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                const recordingStartTime = Date.now();
+                
+                // Set up audio analysis for silence detection
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                analyser = audioContext.createAnalyser();
+                microphone = audioContext.createMediaStreamSource(stream);
+                microphone.connect(analyser);
+                
+                analyser.fftSize = 256;
+                const dataArray = new Uint8Array(analyser.frequencyBinCount);
+                
                 mediaRecorder = new MediaRecorder(stream);
                 audioChunks = [];
 
@@ -308,6 +434,18 @@
                 };
 
                 mediaRecorder.onstop = async () => {
+                    // Clean up audio analysis
+                    if (silenceTimer) {
+                        clearInterval(silenceTimer);
+                        silenceTimer = null;
+                    }
+                    if (microphone) {
+                        microphone.disconnect();
+                    }
+                    if (audioContext && audioContext.state !== 'closed') {
+                        await audioContext.close();
+                    }
+                    
                     const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
                     await sendAudioToDeepgram(audioBlob);
                     stream.getTracks().forEach(track => track.stop());
@@ -318,6 +456,39 @@
                 voiceButton.classList.add('recording');
                 buttonText.textContent = 'Recording...';
                 updateStatus('Recording audio...', 'listening');
+                
+                // Monitor audio levels for silence detection
+                silenceStartTime = null;
+                silenceTimer = setInterval(() => {
+                    analyser.getByteFrequencyData(dataArray);
+                    
+                    // Calculate average volume
+                    let sum = 0;
+                    for (let i = 0; i < dataArray.length; i++) {
+                        sum += dataArray[i];
+                    }
+                    const average = sum / dataArray.length;
+                    
+                    const recordingDuration = Date.now() - recordingStartTime;
+                    
+                    if (average < SILENCE_THRESHOLD) {
+                        // Silence detected
+                        if (silenceStartTime === null) {
+                            silenceStartTime = Date.now();
+                        } else {
+                            const silenceDuration = Date.now() - silenceStartTime;
+                            // Only auto-stop if we've recorded for at least MIN_RECORDING_TIME
+                            if (silenceDuration >= SILENCE_DURATION && recordingDuration >= MIN_RECORDING_TIME) {
+                                console.log('Auto-stopping after silence detected');
+                                stopRecording();
+                            }
+                        }
+                    } else {
+                        // Sound detected, reset silence timer
+                        silenceStartTime = null;
+                    }
+                }, 100); // Check every 100ms
+                
             } catch (error) {
                 console.error('Error accessing microphone:', error);
                 updateStatus('Error accessing microphone. Please check permissions.', 'error');
@@ -383,10 +554,18 @@
         }
 
         function stopRecording() {
+            // Clear silence detection timer
+            if (silenceTimer) {
+                clearInterval(silenceTimer);
+                silenceTimer = null;
+            }
+            
             if (mediaRecorder && mediaRecorder.state !== 'inactive') {
                 mediaRecorder.stop();
+            } else {
+                // If recorder already stopped, still reset button
+                resetButton();
             }
-            resetButton();
         }
 
         function resetButton() {
@@ -446,7 +625,7 @@
             if (!tasks || tasks.length === 0) {
                 taskList.innerHTML = `
                     <div class="empty-state">
-                        <p>No tasks yet. Try saying: "Create a task to buy groceries"</p>
+                        <p>No tasks yet. Check the example commands above to get started!</p>
                     </div>
                 `;
                 return;
