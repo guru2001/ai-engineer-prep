@@ -56,6 +56,18 @@ class TaskResponse(BaseModel):
     message: str
 
 
+@app.get("/health")
+async def health_check():
+    """Health check endpoint for uptime monitoring services"""
+    return {"status": "healthy", "service": "voice-todo-app"}
+
+
+@app.get("/ping")
+async def ping():
+    """Simple ping endpoint for uptime monitoring (alternative to /health)"""
+    return {"status": "ok"}
+
+
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
     """Serve the main HTML page"""

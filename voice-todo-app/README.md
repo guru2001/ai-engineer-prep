@@ -135,6 +135,8 @@ voice-todo-app/
 
 ### Main Endpoints
 - `GET /` - Main web interface
+- `GET /health` - Health check endpoint (for uptime monitoring)
+- `GET /ping` - Simple ping endpoint (alternative health check)
 - `GET /api/tasks` - Get all tasks (optional `?category=...&session_id=...`)
 
 ### Voice Command Endpoints
