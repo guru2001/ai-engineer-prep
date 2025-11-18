@@ -29,8 +29,6 @@ A voice-first to-do list web application that uses natural language voice comman
 
 **LLM: OpenAI GPT-4o-mini via LangChain** - OpenAI's GPT-4o-mini was chosen for its optimal balance of performance and cost, providing excellent natural language understanding at a fraction of GPT-4's cost. With typical response times of 300-800ms, it helps achieve the sub-2s total latency target when combined with Deepgram. LangChain provides clean abstractions for tool calling, enabling structured CRUD operations through the `@tool` decorator, while supporting chat history for context-aware responses. The combination delivers ~92% accuracy on natural language command understanding, meeting the 90%+ accuracy requirement.
 
-**Performance**: The complete pipeline (Deepgram transcription + OpenAI LLM processing + database operations) typically completes in 550-1500ms, well under the 2-second requirement. Combined accuracy is 90%+ (Deepgram ~95% × LLM ~92%), making this stack ideal for a production voice-first application. For more details, see [MODEL_CHOICES.md](./MODEL_CHOICES.md).
-
 
 ## Setup
 
