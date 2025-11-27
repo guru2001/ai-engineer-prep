@@ -1,0 +1,15 @@
+[project]
+name = "langgraph-codes"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "ipython>=9.7.0",
+    "langchain>=1.0.8",
+    "langchain-openai>=1.0.3",
+    "langgraph>=1.0.3",
+    "psycopg2-binary>=2.9.9",
+    "duckduckgo-search>=6.1.0",
+    "ddgs>=9.9.1",
+]
