@@ -1,116 +1,86 @@
-from typing import Literal
-from langchain_core.tools import tool
-from langchain_openai import ChatOpenAI
-from langgraph.prebuilt import ToolNode
-from langchain_core.runnables import RunnableConfig
-from langchain_core.messages import HumanMessage
+from typing import Literal, Annotated
 
 import chainlit as cl
-
-@tool
-def get_weather(city: Literal["nyc", "sf"]):
-    """Use this to get weather information."""
-    if city == "nyc":
-        return "It might be cloudy in nyc"
-    elif city == "sf":
-        return "It's always sunny in sf"
-    else:
-        raise AssertionError("Unknown city")
-
-
-tools = [get_weather]
-model = ChatOpenAI(model_name="gpt-3.5-turbo", temperature=0)
-final_model = ChatOpenAI(model_name="gpt-3.5-turbo", temperature=0)
-
-model = model.bind_tools(tools)
-# NOTE: this is where we're adding a tag that we'll can use later to filter the model stream events to only the model called in the final node.
-# This is not necessary if you call a single LLM but might be important in case you call multiple models within the node and want to filter events
-# from only one of them.
-final_model = final_model.with_config(tags=["final_node"])
-tool_node = ToolNode(tools=tools)
-
-from typing import Annotated
-from typing_extensions import TypedDict
-
-from langgraph.graph import END, StateGraph, START
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+)
+from langchain_core.runnables import RunnableConfig
+from langchain_openai import ChatOpenAI
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import MessagesState
-from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage
+
+model = ChatOpenAI(model_name="gpt-3.5-turbo", temperature=0)
+
+TRIP_PLANNER_SYSTEM_PROMPT = (
+    "You are TravelBuddy, an upbeat but practical trip planning assistant. "
+    "Users should be able to ask for suggestions for a trip based on their dates, "
+    "budget, destination, interests, and travel group (e.g. solo, couple, family, friends). "
+    "Always gather or infer these details, then suggest a concrete itinerary, activities, "
+    "transportation, and dining tailored to them."
+)
 
 
-def should_continue(state: MessagesState) -> Literal["tools", "final"]:
-    messages = state["messages"]
-    last_message = messages[-1]
-    # If the LLM makes a tool call, then we route to the "tools" node
-    if last_message.tool_calls:
-        return "tools"
-    # Otherwise, we stop (reply to the user)
-    return "final"
-
-
-def call_model(state: MessagesState):
-    messages = state["messages"]
-    response = None
-    for chunk in model.stream(messages):
-        response = chunk if response is None else response + chunk
-    if response is None:
-        response = model.invoke(messages)
-    # We return a list, because this will get added to the existing list
-    return {"messages": [response]}
-
-
-def call_final_model(state: MessagesState):
-    messages = state["messages"]
-    last_ai_message = messages[-1]
-    chunks = final_model.stream(
-        [
-            SystemMessage("Rewrite this in the voice of Al Roker"),
-            HumanMessage(last_ai_message.content),
-        ]
-    )
-    response = None
-    for chunk in chunks:
-        response = chunk if response is None else response + chunk
-    if response is None:
-        response = final_model.invoke(
-            [
-                SystemMessage("Rewrite this in the voice of Al Roker"),
-                HumanMessage(last_ai_message.content),
-            ]
-        )
-    # overwrite the last AI message from the agent
-    response.id = last_ai_message.id
-    return {"messages": [response]}
+def passthrough_node(state: MessagesState) -> MessagesState:
+    # This node simply returns the accumulated message history.
+    return state
 
 
 builder = StateGraph(MessagesState)
+builder.add_node("history", passthrough_node)
+builder.add_edge(START, "history")
+builder.add_edge("history", END)
 
-builder.add_node("agent", call_model)
-builder.add_node("tools", tool_node)
-# add a separate final node
-builder.add_node("final", call_final_model)
+checkpointer = MemorySaver()
+graph = builder.compile(checkpointer=checkpointer)
 
-builder.add_edge(START, "agent")
-builder.add_conditional_edges(
-    "agent",
-    should_continue,
-)
-
-builder.add_edge("tools", "agent")
-builder.add_edge("final", END)
-
-graph = builder.compile()
 
 @cl.on_message
-async def on_message(msg: cl.Message):
-    config = {"configurable": {"thread_id": cl.context.session.id}}
+async def on_message(user_msg: cl.Message):
+    thread_id = cl.context.session.id
+    config = RunnableConfig(configurable={"thread_id": thread_id})
+
+    # First, update LangGraph state with the new user message and get full history,
+    # using graph.stream so this remains LangGraph-driven and extensible.
+    last_state: MessagesState | None = None
+    for state in graph.stream(
+        {"messages": [HumanMessage(content=user_msg.content)]},
+        config=config,
+        stream_mode="values",
+    ):
+        last_state = state
+
+    history_messages: list[BaseMessage] = (
+        last_state["messages"] if last_state is not None else []
+    )
+
+    # Build messages for the LLM: system prompt + full history.
+    messages: list[BaseMessage] = [
+        SystemMessage(TRIP_PLANNER_SYSTEM_PROMPT),
+        *history_messages,
+    ]
+
+    # Thinking step for the UI.
+    async with cl.Step(
+        name="Trip Planning", parent_id=user_msg.id
+    ) as step:
+        step.output = "Mapping out itinerary ideas and next steps."
+
+    # Stream answer tokens.
     final_answer = cl.Message(content="")
-    
-    for msg, metadata in graph.stream({"messages": [HumanMessage(content=msg.content)]}, stream_mode="messages", config=RunnableConfig(**config)):
-        if (
-            msg.content
-            and not isinstance(msg, HumanMessage)
-            and metadata["langgraph_node"] == "final"
-        ):
-            await final_answer.stream_token(msg.content)
+    full_content = ""
+    async for chunk in model.astream(messages):
+        delta = chunk.content or ""
+        full_content += delta
+        await final_answer.stream_token(delta)
 
     await final_answer.send()
+
+    # Append assistant reply into LangGraph history as an AIMessage.
+    graph.invoke(
+        {"messages": [AIMessage(content=full_content)]},
+        config=config,
+    )

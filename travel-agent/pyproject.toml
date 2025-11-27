@@ -11,4 +11,5 @@ dependencies = [
     "langchain-core>=0.3.0",
     "langchain-openai>=0.2.0",
     "typing-extensions>=4.8.0",
+    "langgraph-checkpoint>=3.0.1",
 ]
