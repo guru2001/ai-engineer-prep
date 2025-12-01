@@ -13,6 +13,9 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import MessagesState
 
+from city_extractor import extract_places_from_text
+from map_utils import get_map_urls
+
 model = ChatOpenAI(model_name="gpt-3.5-turbo", temperature=0)
 
 TRIP_PLANNER_SYSTEM_PROMPT = (
@@ -88,3 +91,54 @@ async def on_message(user_msg: cl.Message):
     # already-sent message with the final content.
     final_answer.content = full_content or "I'm not sure how to respond."
     await final_answer.update()
+    
+    # Extract places from the response and display map in sidebar
+    if full_content:
+        places = extract_places_from_text(full_content, model=model)
+        
+        if places:
+            # Limit to 10 places
+            places = places[:10]
+            
+            # Get map URLs
+            embed_url, map_url = get_map_urls(places)
+            
+            # Debug: print URLs to verify they're generated
+            print(f"Map URLs - Embed: {embed_url[:100] if embed_url else 'None'}..., Regular: {map_url[:100] if map_url else 'None'}...")
+            print(f"Places to pass: {places}")
+            print(f"Map URL: {map_url}")
+            print(f"Embed URL: {embed_url}")
+            
+            # Extract place names for display
+            place_names = [place.name if hasattr(place, "name") else str(place) for place in places]
+            
+            # Create CustomElement for the map
+            # Pass place names array for backward compatibility with TripMap component
+            try:
+                props = {
+                    "cities": place_names,  # Keep "cities" key for backward compatibility with TripMap component
+                    "mapUrl": map_url or "",
+                    "embed_url": embed_url or ""
+                }
+                print("props ", props)
+                map_element = cl.CustomElement(
+                    name="TripMap",
+                    props=props
+                )
+                
+                # Display the map in the sidebar using ElementSidebar API
+                await cl.ElementSidebar.set_title("Trip Map")
+                await cl.ElementSidebar.set_elements([map_element], key="trip-map")
+                
+                # Also send a message to notify the user
+                map_message = cl.Message(
+                    content=f"🗺️ **Trip Map** - Visiting {len(places)} places: {', '.join(place_names)}\n\nThe map is now displayed in the sidebar!"
+                )
+                await map_message.send()
+            except Exception as e:
+                # Fallback: send a message with just the link if CustomElement fails
+                print(f"Error creating CustomElement: {e}")
+                fallback_message = cl.Message(
+                    content=f"🗺️ **Trip Map** - Visiting {len(places)} places: {', '.join(place_names)}\n\n[Open in Google Maps]({map_url})"
+                )
+                await fallback_message.send()
