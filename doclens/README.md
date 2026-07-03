@@ -1,12 +1,12 @@
 # DocLens — Chat with your PDFs
 
 Upload a PDF and ask questions about it. Answers come back **grounded in the
-document with inline citations** to the exact page — powered by Gemini's direct
-PDF understanding + structured output (no vector database, no hallucinated sources).
+document with inline citations** to the exact page. The backend extracts the
+PDF's text page by page and uses **OpenAI structured outputs** to return a typed
+answer + citations (no vector database, no hallucinated sources).
 
-**Stack:** FastAPI · SQLModel · Google Gemini · React + Vite · Docker.
+**Stack:** FastAPI · SQLModel · OpenAI · pypdf · React + Vite · Docker.
 The backend serves the built React app, so the whole thing runs as **one service**.
-Gemini's free tier means the whole demo runs at **$0**.
 
 ---
 
@@ -15,12 +15,12 @@ Gemini's free tier means the whole demo runs at **$0**.
 - 📄 Upload PDFs (stored in the database — no dependency on disk, so it survives restarts on any host)
 - 💬 Ask questions; get answers with **page-level citations** and the exact quoted passage
 - 🗂️ Multiple documents, each with its own persisted chat history
-- 🔌 Model is one env var away from swapping (`gemini-2.0-flash` by default; `gemini-2.5-flash` etc.)
+- 🔌 Model is one env var away from swapping (`gpt-4o-mini` by default; `gpt-4.1-mini`, `gpt-4o` etc.)
 
 ## Architecture
 
 ```
-React (Vite) ── /api ──► FastAPI ──► Gemini (PDF + structured citations)
+React (Vite) ── /api ──► FastAPI ──► pypdf (per-page text) ──► OpenAI (structured citations)
                             │
                             └──► Postgres / SQLite  (documents + messages)
 ```
@@ -37,7 +37,7 @@ The API lives under `/api/*`; everything else serves the built React SPA.
 cd backend
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env          # then add your GEMINI_API_KEY
+cp .env.example .env          # then add your OPENAI_API_KEY
 uvicorn app.main:app --reload --port 8000
 ```
 
@@ -49,13 +49,13 @@ npm install
 npm run dev                   # http://localhost:5173 (proxies /api to :8000)
 ```
 
-Get a free API key at <https://aistudio.google.com/apikey>.
+Get an API key at <https://platform.openai.com/api-keys>.
 
 ## Run as one container
 
 ```bash
 docker build -t doclens .
-docker run -p 8000:8000 -e GEMINI_API_KEY=AIza... doclens
+docker run -p 8000:8000 -e OPENAI_API_KEY=sk-... doclens
 # open http://localhost:8000
 ```
 
@@ -70,7 +70,7 @@ Defaults to SQLite. For persistence across restarts, pass a Postgres URL:
 2. **Push** this repo to GitHub.
 3. **Render** → *New +* → *Blueprint* → pick the repo (it reads `render.yaml`).
 4. Set the two secrets in the Render dashboard:
-   - `GEMINI_API_KEY` = your free Google AI Studio key
+   - `OPENAI_API_KEY` = your OpenAI key
    - `DATABASE_URL` = your Neon connection string
 5. Deploy. Your live URL is `https://doclens.onrender.com` (free tier sleeps after ~15 min idle → first request has a cold start).
 
@@ -80,8 +80,8 @@ Defaults to SQLite. For persistence across restarts, pass a Postgres URL:
 
 | Var | Default | Notes |
 |---|---|---|
-| `GEMINI_API_KEY` | — | Required. Free at [aistudio.google.com/apikey](https://aistudio.google.com/apikey). |
-| `GEMINI_MODEL` | `gemini-2.0-flash` | `gemini-2.5-flash` / `gemini-1.5-flash` also work. |
+| `OPENAI_API_KEY` | — | Required. Get one at [platform.openai.com/api-keys](https://platform.openai.com/api-keys). |
+| `OPENAI_MODEL` | `gpt-4o-mini` | `gpt-4.1-mini` / `gpt-4o` for higher quality. |
 | `DATABASE_URL` | `sqlite:///./doclens.db` | Use a Postgres URL in production. |
 | `CORS_ORIGINS` | `http://localhost:5173` | Comma-separated; only matters if you host the frontend separately. |
 | `MAX_UPLOAD_MB` | `25` | Upload size cap. |

@@ -6,10 +6,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    # Google Gemini — the SDK reads GEMINI_API_KEY (or GOOGLE_API_KEY) from the
-    # environment automatically. Get a FREE key at https://aistudio.google.com/apikey
-    # gemini-2.0-flash is fast, free-tier eligible, and reads PDFs directly.
-    gemini_model: str = "gemini-2.0-flash"
+    # OpenAI — the SDK reads OPENAI_API_KEY from the environment automatically.
+    # gpt-4o-mini is cheap and supports structured outputs. Override with
+    # OPENAI_MODEL (e.g. gpt-4.1-mini, gpt-4o) for higher quality.
+    openai_model: str = "gpt-4o-mini"
 
     # Storage. SQLite by default; set DATABASE_URL to a Postgres URL in prod.
     # PDF bytes live in the DB (see models.Document), so no file storage needed.

@@ -1,24 +1,26 @@
-"""LLM integration for grounded, cited document Q&A — Google Gemini (free tier).
+"""LLM integration for grounded, cited document Q&A — OpenAI.
 
-Gemini reads the PDF directly (no embeddings / vector DB). We use Gemini's
-structured-output mode to get back a typed JSON object: the answer plus a list
-of citations, each carrying the quoted passage and the page it came from.
+We extract the PDF's text page by page and label each page (`=== Page N ===`),
+then ask the model — via OpenAI structured outputs — to answer using only that
+text and cite the exact passage plus the page it came from. Labeling pages
+ourselves makes the citations' page numbers exact rather than model-guessed.
 """
 
+import io
 from functools import lru_cache
 
-from google import genai
-from google.genai import types
+from openai import OpenAI
 from pydantic import BaseModel
+from pypdf import PdfReader
 
 from ..config import get_settings
 
 SYSTEM_PROMPT = (
     "You are DocLens, a careful document analyst. Answer the user's question "
-    "using ONLY the attached document. For every claim, include a citation with "
-    "the exact quoted passage and the page number it appears on. If the answer is "
-    "not in the document, say so plainly rather than guessing, and return no "
-    "citations."
+    "using ONLY the provided document text. The document is split into sections "
+    "marked '=== Page N ==='. For every claim, add a citation with the exact "
+    "quoted passage and the page number (N) it appears on. If the answer is not "
+    "in the document, say so plainly and return no citations."
 )
 
 
@@ -34,32 +36,51 @@ class _CitedAnswer(BaseModel):
 
 
 @lru_cache
-def _client() -> genai.Client:
-    # Reads GEMINI_API_KEY / GOOGLE_API_KEY from the environment.
-    return genai.Client()
+def _client() -> OpenAI:
+    # Reads OPENAI_API_KEY from the environment.
+    return OpenAI()
+
+
+def _extract_pages(pdf_bytes: bytes) -> str:
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    parts: list[str] = []
+    for i, page in enumerate(reader.pages, start=1):
+        text = (page.extract_text() or "").strip()
+        if text:
+            parts.append(f"=== Page {i} ===\n{text}")
+    return "\n\n".join(parts)
 
 
 def answer_question(pdf_bytes: bytes, filename: str, question: str) -> tuple[str, list[dict]]:
     """Return (answer_text, citations) for a question about a PDF."""
     settings = get_settings()
 
-    response = _client().models.generate_content(
-        model=settings.gemini_model,
-        contents=[
-            types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf"),
-            f"Document title: {filename}\n\nQuestion: {question}",
+    doc_text = _extract_pages(pdf_bytes)
+    if not doc_text:
+        return (
+            "I couldn't extract any text from this PDF — it may be a scanned image "
+            "without a text layer.",
+            [],
+        )
+
+    user_content = f"Document: {filename}\n\n{doc_text}\n\n---\nQuestion: {question}"
+
+    completion = _client().beta.chat.completions.parse(
+        model=settings.openai_model,
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_content},
         ],
-        config=types.GenerateContentConfig(
-            system_instruction=SYSTEM_PROMPT,
-            response_mime_type="application/json",
-            response_schema=_CitedAnswer,
-            max_output_tokens=2048,
-        ),
+        response_format=_CitedAnswer,
     )
 
-    parsed: _CitedAnswer | None = getattr(response, "parsed", None)
-    if parsed is None:  # fall back to parsing the JSON text if needed
-        parsed = _CitedAnswer.model_validate_json(response.text)
+    message = completion.choices[0].message
+    if message.refusal:
+        return message.refusal, []
+
+    parsed = message.parsed
+    if parsed is None:
+        return "The model returned no answer. Please try rephrasing.", []
 
     citations = [c.model_dump() for c in parsed.citations]
     return parsed.answer.strip(), citations
