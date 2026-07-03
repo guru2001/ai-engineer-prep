@@ -7,9 +7,9 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     # OpenAI — the SDK reads OPENAI_API_KEY from the environment automatically.
-    # gpt-4o-mini is cheap and supports structured outputs. Override with
-    # OPENAI_MODEL (e.g. gpt-4.1-mini, gpt-4o) for higher quality.
-    openai_model: str = "gpt-4o-mini"
+    # gpt-4.1-nano is the cheapest model that still supports structured outputs.
+    # Override with OPENAI_MODEL (e.g. gpt-4o-mini, gpt-4.1-mini) for more quality.
+    openai_model: str = "gpt-4.1-nano"
 
     # Storage. SQLite by default; set DATABASE_URL to a Postgres URL in prod.
     # PDF bytes live in the DB (see models.Document), so no file storage needed.

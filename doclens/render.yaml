@@ -12,7 +12,7 @@ services:
       - key: OPENAI_API_KEY
         sync: false # paste your OpenAI key in the Render dashboard
       - key: OPENAI_MODEL
-        value: gpt-4o-mini
+        value: gpt-4.1-nano
       - key: DATABASE_URL
         sync: false # paste a Neon (or other) Postgres URL — see README
       - key: CORS_ORIGINS

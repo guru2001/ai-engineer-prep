@@ -15,7 +15,7 @@ The backend serves the built React app, so the whole thing runs as **one service
 - 📄 Upload PDFs (stored in the database — no dependency on disk, so it survives restarts on any host)
 - 💬 Ask questions; get answers with **page-level citations** and the exact quoted passage
 - 🗂️ Multiple documents, each with its own persisted chat history
-- 🔌 Model is one env var away from swapping (`gpt-4o-mini` by default; `gpt-4.1-mini`, `gpt-4o` etc.)
+- 🔌 Model is one env var away from swapping (`gpt-4.1-nano` by default — cheapest; `gpt-4o-mini`, `gpt-4.1-mini` etc.)
 
 ## Architecture
 
@@ -81,7 +81,7 @@ Defaults to SQLite. For persistence across restarts, pass a Postgres URL:
 | Var | Default | Notes |
 |---|---|---|
 | `OPENAI_API_KEY` | — | Required. Get one at [platform.openai.com/api-keys](https://platform.openai.com/api-keys). |
-| `OPENAI_MODEL` | `gpt-4o-mini` | `gpt-4.1-mini` / `gpt-4o` for higher quality. |
+| `OPENAI_MODEL` | `gpt-4.1-nano` | `gpt-4o-mini` / `gpt-4.1-mini` for higher quality. |
 | `DATABASE_URL` | `sqlite:///./doclens.db` | Use a Postgres URL in production. |
 | `CORS_ORIGINS` | `http://localhost:5173` | Comma-separated; only matters if you host the frontend separately. |
 | `MAX_UPLOAD_MB` | `25` | Upload size cap. |
