@@ -1,0 +1,19 @@
+# Render Blueprint — one Docker web service.
+# Deploy: push to GitHub, then in Render → "New +" → "Blueprint" and pick the repo.
+# You still set ANTHROPIC_API_KEY and DATABASE_URL in the dashboard (marked sync:false).
+services:
+  - type: web
+    name: doclens
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false # paste your free Google AI Studio key in the Render dashboard
+      - key: GEMINI_MODEL
+        value: gemini-2.0-flash
+      - key: DATABASE_URL
+        sync: false # paste a Neon (or other) Postgres URL — see README
+      - key: CORS_ORIGINS
+        value: "*"

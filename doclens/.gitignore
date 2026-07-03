@@ -1,0 +1,20 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.db
+
+# Node / frontend build
+node_modules/
+dist/
+
+# Secrets & local data
+.env
+uploads/
+
+# OS
+.DS_Store
+
+# TrueFoundry prep (lives in its own repo)
+prep-plan.html
+site/

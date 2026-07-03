@@ -1,0 +1,10 @@
+**/.venv
+**/node_modules
+**/dist
+**/__pycache__
+**/*.db
+**/.env
+.git
+uploads
+site
+prep-plan.html
